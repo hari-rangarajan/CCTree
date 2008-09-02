@@ -1,0 +1,13 @@
+This is a mirror of http://www.vim.org/scripts/script.php?script_id=2368
+
+Project details/Screenshots:
+                 http://sites.google.com/site/vimcctree/
+ 
+  Description:
+       Plugin generates call-trees for any function or macro in real-time inside  Vim. (Functionality similar to that seen in other IDEs like
+Kscope, Source navigator, Eclipse)
+
+  Requirements: 1) Cscope          2) Vim 7.xx 
+
+ 
+ 
