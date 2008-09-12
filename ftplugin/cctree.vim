@@ -3,7 +3,7 @@
 "
 " Script Info and Documentation 
 "=============================================================================
-"    Copyright: Copyright (C) August, 2008 Hari Rangarajan
+"    Copyright: Copyright (C) August 2008, Hari Rangarajan
 "               Permission is hereby granted to use and distribute this code,
 "               with or without modifications, provided that this copyright
 "               notice is copied with it. Like anything else that's free,
@@ -15,9 +15,9 @@
 " Name Of File: CCTree.vim
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
-"          URL: http://vim.sourceforge.net/scripts/script.php?script_id=???
-"  Last Change: August 31, 2008
-"      Version: 0.1 
+"          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
+"  Last Change: September 12, 2008
+"      Version: 0.2
 "
 "=============================================================================
 " 
@@ -26,12 +26,17 @@
 "  Vim.
 "
 "  Requirements: 1) Cscope
-"                2) Vim 7.xx with optional Perl interface (recommended for faster 
+"                2) Vim 7.xx 
+"
+"                   Perl interface optional (recommended for faster 
 "                   database loads, check :version to see whether [+]perl is 
 "                   enabled)
+"                   (Note: With Version 0.2, native VIM loads are equally good
+"                       as the Perl version)
 "
-"                   To configure perl to be included:
-"                   ./configure --with-features=XXXX --enable-perlinterp
+"                   If for some reason, the perl version needs to be enabled,
+"                   search for "ENABLE_PERL" and set s:allow_perl=1
+"
 "
 "                Tested on Unix and the following Win32 versions:
 "                + Cscope, mlcscope (WIN32)
@@ -60,6 +65,10 @@
 "           (Please note that it might take a while depending on the 
 "           database size)
 "
+"           A database name, i.e., my_cscope.out, can be specified with 
+"           the command. If not provided, a prompt will ask for the 
+"           filename; default is cscope.out.
+"
 "           To unload database, use command ":CCTreeUnLoadDB"
 "
 "           Default Mappings:
@@ -72,7 +81,7 @@
 "             Preview symbol in other window    <Ctrl-P>
 "
 "          Command List:
-"             CCTreeLoadDB                
+"             CCTreeLoadDB                <dbname>
 "             CCTreeUnLoadDB             
 "             CCTreeTraceForward          <symbolname>
 "             CCTreeTraceReverse          <symbolname>     
@@ -98,12 +107,21 @@
 "                 in incorrectly identified function blocks, etc.
 "
 "  History:
-"           Version 0.1:
-"                Cross-referencing support for only functions and macros
-"                Functions inside macro definitions will be incorrectly
-"                attributed to the top level calling function
+"           Version 0.2:
+"               September 12, 2008
+"               (Patches from Yegappan Lakshmanan, thanks!)
+"                 1. Support for using the plugin in Vi-compatible mode.
+"                 2. Filtering out unwanted lines before processing the db.
+"                 3. Command-line completion for the commands.
+"                 4. Using the cscope db from any directory.
 "
-"               TODO: Work is in progress on a more complex database
+"           Version 0.1:
+"                August 31,2006
+"                + Cross-referencing support for only functions and macros
+"                  Functions inside macro definitions will be incorrectly
+"                  attributed to the top level calling function
+"
+"           TODO: Work is in progress on a more complex database
 "               cross-ref mechanism that can support symbols, enums, and 
 "               global variables.
 "
@@ -116,20 +134,34 @@ else
    finish 
 endif
 
+" Line continuation used here
+let s:cpo_save = &cpoptions
+set cpoptions&vim
+
 " Global variables 
 " Modify in .vimrc to modify default behavior
-let g:CCTreeCscopeDb = "cscope.out"
-let g:CCTreeRecursiveDepth = 3
-let g:CCTreeMinVisibleDepth = 3
-let g:CCTreeOrientation = "leftabove"
+if !exists('CCTreeCscopeDb')
+    let CCTreeCscopeDb = "cscope.out"
+endif
+if !exists('CCTreeRecursiveDepth')
+    let CCTreeRecursiveDepth = 3
+endif
+if !exists('CCTreeMinVisibleDepth')
+    let CCTreeMinVisibleDepth = 3
+endif
+if !exists('CCTreeOrientation')
+    let CCTreeOrientation = "leftabove"
+endif
 
 " Plugin related local variables
 let s:pluginname = 'CCTree'
 let s:windowtitle = 'CCTree-Preview'
 let s:CCTreekeyword = ''
 
-" Disable perl 
-let s:allow_perl = 1
+" Disable perl interface
+" Version 0.2, perl is disabled by default (might change in the future!)
+" ENABLE_PERL
+let s:allow_perl = 0
 
 
 " Other state variables
@@ -162,30 +194,26 @@ function! s:CCTreeGetIdentifier(line)
 endfunction
 
 
-function! s:CCTreeSymbolCreate(name, symtable)
-    try 
-        let retval = a:symtable[a:name]
-    catch
-        let a:symtable[a:name] = {}
-        let retval = a:symtable[a:name]
-        let retval['name']= a:name
-        let retval['child'] = {}
-        let retval['parent'] = {}
-    finally
-    endtry
+function! s:CCTreeSymbolCreate(name)
+    if has_key(s:symtable, a:name)
+        return s:symtable[a:name]
+    endif
+
+    let s:symtable[a:name] = {}
+    let retval = s:symtable[a:name]
+    let retval['name']= a:name
+    let retval['child'] = {}
+    let retval['parent'] = {}
+
     return retval
 endfunction
 
 function! s:CCTreeSymbolCalled(funcentry, newfunc)
-    if !has_key(a:funcentry['child'], a:newfunc['name'])
-        let a:funcentry['child'][a:newfunc['name']] = []
-    endif
+    let a:funcentry['child'][a:newfunc['name']] = 1
 endfunction
 
 function! s:CCTreeSymbolCallee(funcentry, newfunc)
-    if !has_key(a:funcentry['parent'], a:newfunc['name'])
-        let a:funcentry['parent'][a:newfunc['name']] = []
-    endif
+    let a:funcentry['parent'][a:newfunc['name']] = 1
 endfunction
 
 
@@ -225,7 +253,7 @@ function! s:CCTreeWarningMsg(msg)
 endfunction
 
 if has('perl') && s:allow_perl == 1
-function! s:CCTreeLoadDB()
+function! s:CCTreeLoadDB(db_name)
 perl << PERL_EOF
     VIM::DoCommand("let curfunc =  {}");
     VIM::DoCommand("let newfunc =  {}");
@@ -266,15 +294,15 @@ perl << PERL_EOF
         if ($symchar =~ /\$/) {
             $insidefunc = 1;
             VIM::DoCommand("let curfunc = 
-                        \s:CCTreeSymbolCreate('".$symbol."',s:symtable)");
+                        \s:CCTreeSymbolCreate('".$symbol."')");
         } 
         elsif ($symchar =~ /\#/) {
             VIM::DoCommand("call 
-                        \s:CCTreeSymbolCreate('".$symbol."',s:symtable)");
+                        \s:CCTreeSymbolCreate('".$symbol."')");
         }
         elsif ($symchar =~ /\`/ && $insidefunc == 1) {
             VIM::DoCommand("let newfunc = 
-                        \s:CCTreeSymbolCreate('".$symbol."',s:symtable)");
+                        \s:CCTreeSymbolCreate('".$symbol."')");
             VIM::DoCommand("call s:CCTreeSymbolCalled(curfunc, newfunc)");
             VIM::DoCommand("call s:CCTreeSymbolCallee(newfunc, curfunc)");
        } 
@@ -292,22 +320,33 @@ endfunction
 
     else 
 
-function! s:CCTreeLoadDB()
+function! s:CCTreeLoadDB(db_name)
     let curfunc =  {}
     let newfunc =  {}
     let s:symtable = {}
     let s:dbloaded = 0
- 
+
+    let cscope_db = a:db_name
+    if cscope_db == ''
+        let cscope_db = input('Cscope database: ', g:CCTreeCscopeDb, 'file')
+        if cscope_db == ''
+            return
+        endif
+    endif
+
+    if !filereadable(cscope_db)
+        call s:CCTreeWarningMsg('Cscope database ' . cscope_db . ' not found')
+        return
+    endif
+
     call s:CCTreeBusyStatusLineUpdate('Loading database')
-    let symbols = readfile(g:CCTreeCscopeDb)
-    if empty(symbols)    
-        call s:CCTreeWarningMsg("Cscope database not found")
+    let symbols = readfile(cscope_db)
+    if empty(symbols)
+        call s:CCTreeWarningMsg("Failed to read cscope database")
         call s:CCTreeRestoreStatusLine()
         return
     endif
 
-    let s:symcount = len(symbols)
-    let s:symcount1percent = s:symcount/100
     let s:symprogress = 0
     let s:symcur = 0
     let symindex = 0
@@ -325,6 +364,12 @@ function! s:CCTreeLoadDB()
         return
     endif
 
+    " Filter-out lines that doesn't have relevant information
+    call filter(symbols, 'v:val =~ "^\t[`#$}]"')
+
+    let s:symcount = len(symbols)
+    let s:symcount1percent = s:symcount/100
+
     for a in symbols
         let s:symcur += 1
         if s:symcount1percent < s:symcur
@@ -335,20 +380,18 @@ function! s:CCTreeLoadDB()
             redrawstatus
         endif
 
-        let s:symlastprogress = s:symprogress
-
-        if a[0] == "\t"
-            if a[1] == "`" && curfunc != {}
-                let newfunc = s:CCTreeSymbolCreate(a[2:], s:symtable)
-                call s:CCTreeSymbolCalled(curfunc, newfunc)
-                call s:CCTreeSymbolCallee(newfunc, curfunc)
-            elseif a[1] == "$"
-                let curfunc = s:CCTreeSymbolCreate(a[2:], s:symtable)
-            elseif a[1] == "#"
-                call s:CCTreeSymbolCreate(a[2:], s:symtable)
-            elseif a[1] == "}"
-                let curfunc = {}
-            endif
+        if a[1] == "`"
+             if !empty(curfunc)
+                 let newfunc = s:CCTreeSymbolCreate(a[2:])
+                 call s:CCTreeSymbolCalled(curfunc, newfunc)
+                 call s:CCTreeSymbolCallee(newfunc, curfunc)
+             endif
+        elseif a[1] == "$"
+            let curfunc = s:CCTreeSymbolCreate(a[2:])
+        elseif a[1] == "#"
+            call s:CCTreeSymbolCreate(a[2:])
+        elseif a[1] == "}"
+            let curfunc = {}
         endif
     endfor
 
@@ -362,6 +405,8 @@ endif
 function! s:CCTreeUnloadDB()
     unlet s:symtable
     let s:dbloaded = 0
+    " Force cleanup
+    call garbagecollect()
 endfunction 
 
 
@@ -433,9 +478,15 @@ function! s:CCTreePreviewWindowEnter()
  "       syntax on
         setlocal statusline=%=%{CCTreePreviewStatusLine()}
 
+        let cpo_save = &cpoptions
+        set cpoptions&vim
+
         call s:CCTreeBufferKeyMappingsCreate() 
-        nmap <buffer> <C-p>  :CCTreePreviewBufferUsingTag<CR>
-        nmap <buffer> <CR>  :CCTreeLoadBufferUsingTag<CR>
+        nnoremap <buffer> <silent> <C-p>  :CCTreePreviewBufferUsingTag<CR>
+        nnoremap <buffer> <silent> <CR>  :CCTreeLoadBufferUsingTag<CR>
+        nnoremap <buffer> <silent> <2-LeftMouse> :CCTreeLoadBufferUsingTag<CR>
+
+        let &cpoptions = cpo_save
     endif
         setlocal foldmethod=expr
         setlocal foldexpr=s:CCTreeFoldExpr(getline(v:lnum))
@@ -515,21 +566,27 @@ function! s:CCTreeDBIsLoaded()
     return 1
 endfunction
 
-function! s:CCTreeTraceForwardTreeForSymbol(symbol)
-    if (s:CCTreeDBIsLoaded() == 0) 
-        return
-    endif
-    let atree = s:CCTreeGetCallsForSymbol(a:symbol, 0, 'child')
-    call s:CCTreeStoreState(a:symbol, 'child')
-    call s:CCTreeUpdateForCurrentSymbol()
-endfunction
+" Trick to get the current script ID
+map <SID>xx <SID>xx
+let s:sid = substitute(maparg('<SID>xx'), '<SNR>\(\d\+_\)xx$', '\1', '')
+unmap <SID>xx
 
-function! s:CCTreeTraceReverseTreeForSymbol(symbol)
-    if (s:CCTreeDBIsLoaded() == 0) 
+function! s:CCTreeTraceTreeForSymbol(sym_arg, direction)
+    if s:CCTreeDBIsLoaded() == 0
         return
     endif
-    let atree = s:CCTreeGetCallsForSymbol(a:symbol, 0, 'parent')
-    call s:CCTreeStoreState(a:symbol, 'parent')
+
+    let symbol = a:sym_arg
+    if symbol == ''
+        let symbol = input('Trace symbol: ', expand('<cword>'),
+                    \ 'customlist,<SNR>' . s:sid . 'CCTreeCompleteKwd')
+        if symbol == ''
+            return
+        endif
+    endif
+
+    let atree = s:CCTreeGetCallsForSymbol(symbol, 0, a:direction)
+    call s:CCTreeStoreState(symbol, a:direction)
     call s:CCTreeUpdateForCurrentSymbol()
 endfunction
 
@@ -547,6 +604,10 @@ endfunction
 
 function! s:CCTreeLoadBufferFromKeyword()
     call s:CCTreeGetCurrentKeyword()
+    if s:CCTreekeyword == ''
+        return
+    endif
+
     let g:dbg = s:CCTreekeyword
     try 
         exec 'wincmd p'
@@ -556,13 +617,21 @@ function! s:CCTreeLoadBufferFromKeyword()
         if (cscope_connection() > 0)
             exec "cstag ".s:CCTreekeyword
         else
-            exec "tag ".s:CCTreekeyword
+            try
+                exec "tag ".s:CCTreekeyword
+            catch /^Vim\%((\a\+)\)\=:E426/
+                call s:CCTreeWarningMsg('Tag '. s:CCTreekeyword .' not found')
+                wincmd p
+            endtry
         endif
     endtry
 endfunction
     
 function! s:CCTreePreviewBufferFromKeyword()
     call s:CCTreeGetCurrentKeyword()
+    if s:CCTreekeyword == ''
+        return
+    endif
     exec "ptag ".s:CCTreekeyword
 endfunction
 
@@ -587,6 +656,21 @@ function! s:CCTreeCursorHoldHandle()
     endif
 endfunction
 
+" CCTreeCompleteKwd
+" Command line completion function to return names from the db
+function! s:CCTreeCompleteKwd(arglead, cmdline, cursorpos)
+    if a:arglead == ''
+        return keys(s:symtable)
+    else
+        return filter(keys(s:symtable), 'v:val =~? a:arglead')
+    endif
+endfunction
+
+"function! s:CCTreeShowDB()
+"   echo s:symtable
+"endfunction
+"command! CCTreeShowDB call s:CCTreeShowDB()
+
 augroup CCTreeGeneral
     au!
     autocmd CursorHold CCTree-Preview call s:CCTreeCursorHoldHandle()
@@ -595,26 +679,36 @@ augroup END
 highlight link CCTreeKeyword Tag
 
 " Define commands
-command! -nargs=0 CCTreeLoadDB                 call s:CCTreeLoadDB()
+command! -nargs=? -complete=file CCTreeLoadDB  call s:CCTreeLoadDB(<q-args>)
 command! -nargs=0 CCTreeUnLoadDB               call s:CCTreeUnloadDB()
-command! -nargs=1 -complete=tag CCTreeTraceForward   
-                                              \ call s:CCTreeTraceForwardTreeForSymbol(<f-args>)
-command! -nargs=1 -complete=tag CCTreeTraceReverse  
-                                              \ call s:CCTreeTraceReverseTreeForSymbol(<f-args>)
+command! -nargs=? -complete=customlist,s:CCTreeCompleteKwd
+        \ CCTreeTraceForward call s:CCTreeTraceTreeForSymbol(<q-args>, 'child')
+command! -nargs=? -complete=customlist,s:CCTreeCompleteKwd CCTreeTraceReverse  
+            \ call s:CCTreeTraceTreeForSymbol(<q-args>, 'parent')
 command! -nargs=0 CCTreeLoadBufferUsingTag call s:CCTreeLoadBufferFromKeyword()
 command! -nargs=0 CCTreePreviewBufferUsingTag call s:CCTreePreviewBufferFromKeyword()
 command! -nargs=0 CCTreeRecurseDepthPlus call s:CCTreeRecursiveDepthIncrease()
 command! -nargs=0 CCTreeRecurseDepthMinus call s:CCTreeRecursiveDepthDecrease()
 
 function! s:CCTreeBufferKeyMappingsCreate()
-     nmap <buffer> <C-\>< :CCTreeTraceReverse <C-R>=expand("<cword>")<CR><CR> 
-     nmap <buffer> <C-\>> :CCTreeTraceForward <C-R>=expand("<cword>")<CR><CR> 
-     nmap <buffer> <C-\>= :CCTreeRecurseDepthPlus<CR> 
-     nmap <buffer> <C-\>- :CCTreeRecurseDepthMinus<CR> 
+     nnoremap <buffer> <silent> <C-\><
+                 \ :CCTreeTraceReverse <C-R>=expand("<cword>")<CR><CR> 
+     nnoremap <buffer> <silent> <C-\>>
+                 \ :CCTreeTraceForward <C-R>=expand("<cword>")<CR><CR> 
+     nnoremap <buffer> <silent> <C-\>= :CCTreeRecurseDepthPlus<CR> 
+     nnoremap <buffer> <silent> <C-\>- :CCTreeRecurseDepthMinus<CR> 
 endfunction
 
 augroup CCTreeMaps
 au!
 " Header files get detected as cpp?
+" This is a bug in Vim 7.2, a patch needs to be applied to the runtime c
+" syntax files
+" For noew, use this hack to make *.h files work
 autocmd FileType * if &ft == 'c'|| &ft == 'cpp' |call s:CCTreeBufferKeyMappingsCreate()| endif
 augroup END
+
+" restore 'cpo'
+let &cpoptions = s:cpo_save
+unlet s:cpo_save
+
