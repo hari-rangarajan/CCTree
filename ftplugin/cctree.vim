@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: September 12, 2008
-"      Version: 0.2
+"  Last Change: September 21, 2008
+"      Version: 0.3
 "
 "=============================================================================
 " 
@@ -28,23 +28,11 @@
 "  Requirements: 1) Cscope
 "                2) Vim 7.xx 
 "
-"                   Perl interface optional (recommended for faster 
-"                   database loads, check :version to see whether [+]perl is 
-"                   enabled)
-"                   (Note: With Version 0.2, native VIM loads are equally good
-"                       as the Perl version)
-"
-"                   If for some reason, the perl version needs to be enabled,
-"                   search for "ENABLE_PERL" and set s:allow_perl=1
-"
-"
 "                Tested on Unix and the following Win32 versions:
 "                + Cscope, mlcscope (WIN32)
 "                       http://www.geocities.com/shankara_c/cscope.html
 "                       http://www.bell-labs.com/project/wwexptools/packages.html
 "
-"                + Perl (WIN32)
-"                       Active Perl 5.8.8
 "                
 "
 "  Installation: 
@@ -58,8 +46,10 @@
 "           
 "
 "  Usage:
-"           Build cscope database with -c option, for example:
-"           > cscope -b -c -i cscope.files
+"           Build cscope database, for example:
+"           > cscope -b -i cscope.files
+"               [Tip: add -c option to build uncompressed databases for faster
+"               load speeds]
 "
 "           Load database with command ":CCTreeLoadDB"
 "           (Please note that it might take a while depending on the 
@@ -107,6 +97,12 @@
 "                 in incorrectly identified function blocks, etc.
 "
 "  History:
+"           Version 0.3:
+"               September 21, 2008
+"                 1. Support compressed cscope databases
+"                 2. Display window related bugs fixed
+"                 3. More intuitive display and folding capabilities
+"               
 "           Version 0.2:
 "               September 12, 2008
 "               (Patches from Yegappan Lakshmanan, thanks!)
@@ -116,20 +112,17 @@
 "                 4. Using the cscope db from any directory.
 "
 "           Version 0.1:
-"                August 31,2006
-"                + Cross-referencing support for only functions and macros
-"                  Functions inside macro definitions will be incorrectly
-"                  attributed to the top level calling function
+"                August 31,2008
+"                 1. Cross-referencing support for only functions and macros
+"                    Functions inside macro definitions will be incorrectly
+"                    attributed to the top level calling function
 "
-"           TODO: Work is in progress on a more complex database
-"               cross-ref mechanism that can support symbols, enums, and 
-"               global variables.
 "
 "=============================================================================
 
 if !exists('loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
-  let loaded_cctree = 1
+  let loaded_cctree = 0
 else
    finish 
 endif
@@ -252,73 +245,6 @@ function! s:CCTreeWarningMsg(msg)
     echohl None
 endfunction
 
-if has('perl') && s:allow_perl == 1
-function! s:CCTreeLoadDB(db_name)
-perl << PERL_EOF
-    VIM::DoCommand("let curfunc =  {}");
-    VIM::DoCommand("let newfunc =  {}");
-    VIM::DoCommand("let s:symtable = {}");
-
-    $insidefunc = 0;
-
-    VIM::DoCommand("call s:CCTreeInitStatusLine()");
-    VIM::DoCommand("call s:CCTreeBusyStatusLineUpdate('Loading database')");
-    open (CSCOPEDB, VIM::Eval("g:CCTreeCscopeDb"));
-    my @lines = <CSCOPEDB>;
-   
-    if ($lines[0] !~ /cscope.*\-c/ ) {
-        VIM::DoCommand("call s:CCTreeWarningMsg
-                \('Cscope database was not found or built with -c flag')");
-        VIM::DoCommand("call s:CCTreeRestoreStatusLine()");
-        die;
-    }
-
-    $linesmax = @lines;
-    $lines1percent = $linesmax/100;
-    $linescount = 0;
-    $linesprogress = 0;
-    
-    VIM::DoCommand("call 
-                    \s:CCTreeBusyStatusLineUpdate('Reading database')");
-    foreach $line (@lines) {
-        $_ = $line;
-        $linescount += 1;
-        if ($linescount > $lines1percent) {
-            $linescount = 0;
-            $linesprogress += 1;
-            VIM::DoCommand("let s:symprogress = ".$linesprogress);
-            VIM::DoCommand("call s:CCTreeBusyStatusLineExtraInfo(\"Processing ". 
-                    \ $linesprogress. "\%, total ". $linesmax. " items\")");
-       }
-       ($symchar, $symbol) = /^\t(.)(.*)/;
-        if ($symchar =~ /\$/) {
-            $insidefunc = 1;
-            VIM::DoCommand("let curfunc = 
-                        \s:CCTreeSymbolCreate('".$symbol."')");
-        } 
-        elsif ($symchar =~ /\#/) {
-            VIM::DoCommand("call 
-                        \s:CCTreeSymbolCreate('".$symbol."')");
-        }
-        elsif ($symchar =~ /\`/ && $insidefunc == 1) {
-            VIM::DoCommand("let newfunc = 
-                        \s:CCTreeSymbolCreate('".$symbol."')");
-            VIM::DoCommand("call s:CCTreeSymbolCalled(curfunc, newfunc)");
-            VIM::DoCommand("call s:CCTreeSymbolCallee(newfunc, curfunc)");
-       } 
-            elsif ($symchar =~ /\}/) {
-            $insidefunc = 0;
-       }
-    }
-    VIM::DoCommand("let &statusline = s:save_statusline");
-    VIM::DoCommand("echomsg 'Done building database'");
-    
-    VIM::DoCommand("let s:dbloaded = 1");
-    close(CSCOPEDB);
-PERL_EOF
-endfunction
-
-    else 
 
 function! s:CCTreeLoadDB(db_name)
     let curfunc =  {}
@@ -358,18 +284,24 @@ function! s:CCTreeLoadDB(db_name)
     
     call s:CCTreeBusyStatusLineUpdate('Reading database')
     " Check if database was built uncompressed
-    if symbols[0] !~ "cscope.*\-c"
-        call s:CCTreeWarningMsg("Cscope database was not built with -c flag")
-        call s:CCTreeRestoreStatusLine()
-        return
+   if symbols[0] !~ "cscope.*\-c"
+        let s:dbcompressed = 1
+    else
+        let s:dbcompressed = 0
     endif
-
     " Filter-out lines that doesn't have relevant information
     call filter(symbols, 'v:val =~ "^\t[`#$}]"')
+
+    if s:dbcompressed == 1
+        let compressdict = s:Digraph_DictTable_Init()
+        call s:CCTreeBusyStatusLineUpdate('Uncompressing database')
+        call map(symbols, 's:Digraph_Uncompress_Fast(v:val, compressdict)')
+    endif
 
     let s:symcount = len(symbols)
     let s:symcount1percent = s:symcount/100
 
+    call s:CCTreeBusyStatusLineUpdate('Analyzing database')
     for a in symbols
         let s:symcur += 1
         if s:symcount1percent < s:symcur
@@ -400,7 +332,6 @@ function! s:CCTreeLoadDB(db_name)
     echomsg "Done building database"
 endfunction
 
-endif
 
 function! s:CCTreeUnloadDB()
     unlet s:symtable
@@ -478,6 +409,9 @@ function! s:CCTreePreviewWindowEnter()
  "       syntax on
         setlocal statusline=%=%{CCTreePreviewStatusLine()}
 
+        syntax match CCTreeMarkers /|\?.*[<>]/
+        syntax match CCTreeSymbol  / \k\+/
+
         let cpo_save = &cpoptions
         set cpoptions&vim
 
@@ -488,10 +422,10 @@ function! s:CCTreePreviewWindowEnter()
 
         let &cpoptions = cpo_save
     endif
-        setlocal foldmethod=expr
-        setlocal foldexpr=s:CCTreeFoldExpr(getline(v:lnum))
-        setlocal foldtext=CCTreeFoldText()
-        let &l:foldlevel=g:CCTreeMinVisibleDepth
+    setlocal foldmethod=expr
+    setlocal foldexpr=s:CCTreeFoldExpr(getline(v:lnum))
+    setlocal foldtext=CCTreeFoldText()
+    let &l:foldlevel=g:CCTreeMinVisibleDepth
 endfunction   
 
 
@@ -500,24 +434,31 @@ function! s:CCTreeDisplayTreeForALevel(dict, str, level)
         return
     endif
 
-    let dashtxt = repeat(" ", a:level*2)."|".repeat("-", a:level)
+    let passdashtxt = repeat(" ", a:level*2)."|".repeat("-", a:level)
+    let dashtxt = repeat(" ", a:level*2)."+".repeat("-", a:level)
     if s:currentdirection == 'parent' 
         let directiontxt = "< "
     else
         let directiontxt = "> "
     endif
+
     call setline(".", a:str. dashtxt. directiontxt. a:dict['entry'])
     exec "normal o"
-    let &foldlevel = a:level
+ "   let &foldlevel = a:level
     if has_key(a:dict, 'childlinks')
         for a in a:dict['childlinks']
-            call s:CCTreeDisplayTreeForALevel(a, substitute(a:str.dashtxt, "-", " ", "g"), a:level+1)
+            call s:CCTreeDisplayTreeForALevel(a, 
+                \   substitute(a:str.passdashtxt, "-", " ", "g"), a:level+1)
         endfor
     endif
 endfunction
 
 function! s:CCTreeDisplayTreeInWindow(atree)
-    call s:CCTreePreviewWindowEnter()
+    let incctreewin = 1
+    if (bufname('%') != s:windowtitle) 
+        call s:CCTreePreviewWindowEnter()
+        let incctreewin = 0
+    endif
     setlocal modifiable
     1,$d
     call s:CCTreeDisplayTreeForALevel(a:atree, '',  0) 
@@ -525,31 +466,34 @@ function! s:CCTreeDisplayTreeInWindow(atree)
     " Need to force this again
     let &l:foldlevel=g:CCTreeMinVisibleDepth
     setlocal nomodifiable
-    call s:CCTreePreviewWindowLeave()
+    if (incctreewin == 0)
+        call s:CCTreePreviewWindowLeave()
+    endif
 endfunction
 
 function! s:CCTreeFoldExpr(line)
-    let len = strlen(matchstr(a:line,'|-\+'))
+    let len = strlen(matchstr(a:line,'+-\+'))
     if len == 0
         let len = 1
     endif
-    return len
+    return '>'.len
 endfunction
 
 
-" Find a better way of doing this
-function! s:Power(exp, base)
+function! s:GetFoldOffset(exp, base)
     let retval = 1  
     let cnt = a:exp
     while cnt > 0
-        let retval = retval * a:base
+        let retval += cnt * a:base
         let cnt = cnt - 1
     endwhile
     return retval
 endfunction
 
 function! CCTreeFoldText()
-    return repeat(" ", v:foldlevel-1 + (s:Power(v:foldlevel, 2))).'|'.v:folddashes. (v:foldend - v:foldstart + 1). ' items'
+    return getline(v:foldstart).
+                \ " (+". (v:foldend - v:foldstart). 
+                \  ')'. repeat(" ", winwidth(0))
 endfunction
 
 
@@ -666,17 +610,21 @@ function! s:CCTreeCompleteKwd(arglead, cmdline, cursorpos)
     endif
 endfunction
 
-"function! s:CCTreeShowDB()
-"   echo s:symtable
-"endfunction
-"command! CCTreeShowDB call s:CCTreeShowDB()
+function! s:CCTreeShowDB()
+   echo s:symtable
+endfunction
+command! CCTreeShowDB call s:CCTreeShowDB()
 
 augroup CCTreeGeneral
     au!
     autocmd CursorHold CCTree-Preview call s:CCTreeCursorHoldHandle()
 augroup END
 
+
 highlight link CCTreeKeyword Tag
+highlight link CCTreeMarkers LineNr
+highlight link CCTreeSymbol  Function
+
 
 " Define commands
 command! -nargs=? -complete=file CCTreeLoadDB  call s:CCTreeLoadDB(<q-args>)
@@ -704,9 +652,75 @@ au!
 " Header files get detected as cpp?
 " This is a bug in Vim 7.2, a patch needs to be applied to the runtime c
 " syntax files
-" For noew, use this hack to make *.h files work
+" For now, use this hack to make *.h files work
 autocmd FileType * if &ft == 'c'|| &ft == 'cpp' |call s:CCTreeBufferKeyMappingsCreate()| endif
 augroup END
+
+
+
+" Cscope Digraph character compression/decompression routines
+" the logic of these routines are based off the Cscope source code
+
+let s:dichar1 = " teisaprnl(of)=c"	
+let s:dichar2 = " tnerpla"
+
+function! s:Digraph_DictTable_Init ()
+    let dicttable = []
+    let index = 0
+
+    for dc1 in range(strlen(s:dichar1))
+        for dc2 in range(strlen(s:dichar2))
+            call add(dicttable, s:dichar1[dc1].s:dichar2[dc2])
+        endfor
+    endfor
+
+    return dicttable
+endfunction
+
+function! s:Digraph_Uncompress_Slow (value, dicttable)
+    let retval = ""
+    for idx in range(strlen(a:value))
+        let charext = char2nr(a:value[idx])-128
+        if charext >= 0 
+            let retval .= a:dicttable[charext]
+        else
+            let retval .= a:value[idx]
+        endif
+    endfor
+    return retval
+endfunction
+
+function! s:Digraph_Uncompress_Fast (value, dicttable)
+    let dichar_list = split(a:value, '[^\d128-\d255]\{}')
+    let retval = a:value
+    for adichar in dichar_list
+        let retval = substitute(retval, '\C'.adichar, a:dicttable[char2nr(adichar)-128], "g")
+    endfor
+    return retval
+endfunction
+
+
+function! s:Digraph_Compress(value, dicttable)
+    let index = 0
+    let retval = ""
+
+    while index < strlen(a:value)
+        let dc1 = stridx(s:dichar1, a:value[index])
+        if dc1 != -1
+            let dc2 = stridx(s:dichar2, a:value[index+1])
+            if dc2 != -1 
+                let retval .= nr2char(128 + (dc1*8) + dc2)  
+                " skip 2 chars
+                let index += 2
+                continue
+            endif
+        endif
+        let retval .= a:value[index]
+        let index += 1
+    endwhile
+    return retval
+endfunction
+
 
 " restore 'cpo'
 let &cpoptions = s:cpo_save
