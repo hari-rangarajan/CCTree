@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: September 21, 2008
-"      Version: 0.3
+"  Last Change: September 28, 2008
+"      Version: 0.4
 "
 "=============================================================================
 " 
@@ -88,7 +88,43 @@
 "               Maximum visible(unfolded) level, g:CCTreeMinVisibleDepth = 3
 "               Orientation of window,  g:CCTreeOrientation = "leftabove"
 "                (standard vim options for split: [right|left][above|below])
-"             
+"
+"               Use Vertical window, g:CCTreeWindowVertical = 1
+"                   Min width for window, g:CCTreeWindowMinWidth = 40
+"                   g:CCTreeWindowWidth = -1, auto-select best width to fit
+"
+"               Horizontal window, g:CCTreeWindowHeight, default is -1
+"
+"
+"               Display format, g:CCTreeDisplayMode, default 1
+"
+"               Values: 1 -- Ultra-compact (takes minimum screen width)
+"                       2 -- Compact       (Takes little more space)
+"                       3 -- Wide          (Takes copious amounts of space)
+"
+"               For vertical splits, 1 and 2 are good, while 3 is good for
+"               horizontal displays
+"   
+"               NOTE: To get older behavior, add the following to your vimrc
+"               let g:CCTreeDisplayMode = 3
+"               let g:CCTreeWindowVertical = 0
+"
+"               Syntax Coloring:
+"                    CCTreeSymbol is the symbol name
+"                    CCTreeMarkers include  "|","+--->"
+"
+"                    CCTreeHiSymbol is the highlighted call tree functions
+"                    CCTreeHiMarkers is the same as CCTreeMarkers except
+"                           these denote the highlighted call-tree
+"
+"
+"                    CCTreeHiXXXX allows dynamic highlighting of the call-tree.
+"                    To observe the effect, move the cursor to the function to
+"                    highlight the current call-tree. This option can be
+"                    turned off using the setting, g:CCTreeHilightCallTree.
+"                    For faster highlighting, the value of 'updatetime' can be
+"                    changed
+"
 "  Limitations:
 "           The accuracy of the call-tree will only be as good as the cscope 
 "           database generation.
@@ -97,6 +133,15 @@
 "                 in incorrectly identified function blocks, etc.
 "
 "  History:
+"
+"           Version 0.4: September 28, 2008
+"                  1. Rewrite of "tree-display" code
+"                  2. New syntax hightlighting
+"                  3. Dynamic highlighting for call-trees
+"                  4. Support for new window modes (vertical, horizontal)  
+"                  5. New display format option for compact or wide call-trees
+"                  NOTE: defaults for tree-orientation set to vertical
+"
 "           Version 0.3:
 "               September 21, 2008
 "                 1. Support compressed cscope databases
@@ -118,11 +163,18 @@
 "                    attributed to the top level calling function
 "
 "
+"   Thanks:
+"
+"    Michael Wookey                 (Ver 0.4 -- Testing/bug report/patches)
+"    Yegappan Lakshmanan            (Ver 0.2 -- Patches)
+"
+"    The Vim Community, ofcourse :)
+"
 "=============================================================================
 
 if !exists('loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
-  let loaded_cctree = 0
+ " let loaded_cctree = 0
 else
    finish 
 endif
@@ -145,16 +197,33 @@ endif
 if !exists('CCTreeOrientation')
     let CCTreeOrientation = "leftabove"
 endif
+if !exists('CCTreeWindowVertical')
+    let CCTreeWindowVertical = 1
+endif
+if !exists('CCTreeWindowWidth')
+    " -1 is auto select best width
+    let CCTreeWindowWidth = -1
+endif
+if !exists('CCTreeWindowMinWidth')
+    let CCTreeWindowMinWidth = 40
+endif
+if !exists('CCTreeWindowHeight')
+    let CCTreeWindowHeight = -1
+endif
+if !exists('CCTreeDisplayMode')
+    let CCTreeDisplayMode = 1
+endif
+if !exists('CCTreeHilightCallTree')
+    let CCTreeHilightCallTree = 1
+endif
 
 " Plugin related local variables
 let s:pluginname = 'CCTree'
 let s:windowtitle = 'CCTree-Preview'
-let s:CCTreekeyword = ''
 
-" Disable perl interface
-" Version 0.2, perl is disabled by default (might change in the future!)
-" ENABLE_PERL
-let s:allow_perl = 0
+" There could be duplicate keywords on different lines
+let s:CCTreekeyword = ''
+let s:CCTreekeywordLine = -1
 
 
 " Other state variables
@@ -179,11 +248,6 @@ function! DBGredir(...)
     if s:tag_debug
         Decho(a:000)
     endif
-endfunction
-
-
-function! s:CCTreeGetIdentifier(line)
-    return matchlist(a:line, '^\t\(.\)\(.*\)')
 endfunction
 
 
@@ -400,17 +464,43 @@ endfunction
 function! s:CCTreePreviewWindowEnter()
     let s:lastbufname = bufname("%")
     if s:FindOpenBuffer(s:windowtitle) == 0
-        exec  g:CCTreeOrientation." split ". s:windowtitle
+        if g:CCTreeWindowVertical == 1
+            exec  g:CCTreeOrientation." vsplit ". s:windowtitle
+            set winfixwidth
+        else
+            exec  g:CCTreeOrientation." split ". s:windowtitle
+            set winfixheight
+        endif
+
         setlocal buftype=nofile
         setlocal bufhidden=wipe
         setlocal noswapfile
         setlocal nonumber
         setlocal noruler
- "       syntax on
         setlocal statusline=%=%{CCTreePreviewStatusLine()}
 
-        syntax match CCTreeMarkers /|\?.*[<>]/
-        syntax match CCTreeSymbol  / \k\+/
+
+        syntax match CCTreePathMark /\s[|+]/ contained
+        syntax match CCTreeArrow  /-*[<>]/ contained
+        syntax match CCTreeSymbol  / \k\+/  contained
+ 
+        syntax region CCTreeSymbolLine start="^\s" end="$" contains=CCTreeArrow,CCTreePathMark,CCTreeSymbol oneline
+
+        syntax match CCTreeHiArrow  /-*[<>]/ contained
+        syntax match CCTreeHiSymbol  / \k\+/  contained
+        syntax match CCTreeHiPathMark /\s[|+]/ contained
+        
+        syntax match CCTreeMarkExcl  /^[!#]/ contained
+        syntax match CCTreeMarkTilde /@/  contained
+        syntax region CCTreeUpArrowBlock start="@"  end=/[|+]/  contains=CCTreeMarkTilde contained oneline
+
+        syntax region CCTreeHiSymbolLine start="!" end="$" contains=CCTreeMarkExcl, 
+                \ CCTreeUpArrowBlock,
+                \ CCTreeHiSymbol,CCTreeHiArrow,CCTreeHiPathMark oneline
+
+        syntax region CCTreeMarkedSymbolLine start="#" end="$" contains=CCTreeMarkExcl,
+                        \ CCTreeMarkTilde,CCTreePathMark,
+                        \ CCTreeArrow,CCTreeSymbol,CCTreeUpArrowBlock oneline
 
         let cpo_save = &cpoptions
         set cpoptions&vim
@@ -429,29 +519,114 @@ function! s:CCTreePreviewWindowEnter()
 endfunction   
 
 
-function! s:CCTreeDisplayTreeForALevel(dict, str, level)
+function! s:CCTreeBuildTreeForLevel(dict, level, treelist, lvllen)
     if !has_key(a:dict, 'entry')
         return
     endif
 
-    let passdashtxt = repeat(" ", a:level*2)."|".repeat("-", a:level)
-    let dashtxt = repeat(" ", a:level*2)."+".repeat("-", a:level)
-    if s:currentdirection == 'parent' 
-        let directiontxt = "< "
-    else
-        let directiontxt = "> "
-    endif
+    if g:CCTreeDisplayMode == 1 
+       let curlevellen = 1
+    elseif g:CCTreeDisplayMode == 2
+       let curlevellen = a:level + 2
+    elseif g:CCTreeDisplayMode == 3
+       let curlevellen = strlen(a:dict['entry']) + a:level + 2
+    endif    
 
-    call setline(".", a:str. dashtxt. directiontxt. a:dict['entry'])
-    exec "normal o"
- "   let &foldlevel = a:level
+    let a:lvllen[a:level] = min([a:lvllen[a:level], curlevellen])
+
+
+    call add(a:treelist, [a:dict['entry'], a:level])
     if has_key(a:dict, 'childlinks')
         for a in a:dict['childlinks']
-            call s:CCTreeDisplayTreeForALevel(a, 
-                \   substitute(a:str.passdashtxt, "-", " ", "g"), a:level+1)
+            call s:CCTreeBuildTreeForLevel(a, a:level+1, a:treelist, a:lvllen)
         endfor
     endif
 endfunction
+
+
+let s:calltreemaxdepth = 10
+function! s:CCTreeBuildTreeDisplayItems(treedict, treesymlist)
+    let treexinfo = repeat([255], s:calltreemaxdepth)
+    call s:CCTreeBuildTreeForLevel(a:treedict, 0, a:treesymlist, treexinfo) 
+    return s:CCTreeBuildDisplayPrependText(treexinfo)
+endfunction
+
+
+function! s:CCTreeBuildDisplayPrependText(lenlist)
+    let pptxt = "  "
+    let treepptext = repeat([" "], s:calltreemaxdepth)
+
+   if s:currentdirection == 'parent' 
+        let directiontxt = "< "
+    elseif s:currentdirection == 'child'
+        let directiontxt = "> "
+   endif
+
+   let treepptext[0] = pptxt."+".directiontxt
+
+    for idx in range(1, s:calltreemaxdepth-1)
+        if a:lenlist[idx] != 255
+            let pptxt .= repeat(" ", a:lenlist[idx-1])
+            let treepptext[idx] = pptxt."+"
+
+            if g:CCTreeDisplayMode == 1 
+                let arrows = '-'
+            elseif g:CCTreeDisplayMode >= 2
+                let arrows = repeat("-", idx)
+            endif
+
+            let treepptext[idx] = pptxt."+".arrows.directiontxt
+            let pptxt .= "|"
+        endif
+    endfor
+    return treepptext
+endfunction
+
+function! s:CCTreeDisplayTreeList(pptxtlst, treelst)
+    for aentry in a:treelst
+        call setline(".", a:pptxtlst[aentry[1]]. aentry[0])
+        let b:maxwindowlen = max([strlen(getline("."))+1, b:maxwindowlen])
+        exec "normal o"
+    endfor
+endfunction
+
+
+" Provide dynamic call-tree highlighting using 
+" syntax highlight tricks 
+"
+" There are 3 types of lines, marked with the start character [\s, !, #]
+" Also @ is used to mark the path that is going up
+
+function! s:CCTreeMarkCallTree(treelst, keyword)
+    let declevel = -1
+
+    for idx in range(line("."), 1, -1)
+        " Find our keyword
+        if declevel == -1  
+            if a:treelst[idx-1][0] == a:keyword
+                let declevel = a:treelst[idx-1][1] 
+            endif
+        endif
+
+        " Skip folds
+        if declevel != -1 && foldclosed(idx) == -1
+            let curline = getline(idx)
+            if declevel == a:treelst[idx-1][1]
+                let linemarker = '!'
+                let declevel -= 1
+            else
+                let linemarker = '#'
+            endif
+            let pos = match(curline, '[+|]', 0, declevel+1)
+            " Unconventional change char
+            let curline = linemarker.strpart(curline, 1, pos-2).'@'.
+                        \ strpart(curline, pos, 1). strpart(curline, pos+1)
+            call setline(idx, curline)
+        endif
+    endfor
+endfunction
+
+
 
 function! s:CCTreeDisplayTreeInWindow(atree)
     let incctreewin = 1
@@ -461,8 +636,26 @@ function! s:CCTreeDisplayTreeInWindow(atree)
     endif
     setlocal modifiable
     1,$d
-    call s:CCTreeDisplayTreeForALevel(a:atree, '',  0) 
+    let b:treelist = []
+    let b:maxwindowlen = g:CCTreeWindowMinWidth
+    let treemarkertxtlist = s:CCTreeBuildTreeDisplayItems(a:atree, b:treelist)
+    call s:CCTreeDisplayTreeList(treemarkertxtlist, b:treelist)
+
+    if g:CCTreeWindowVertical == 1
+        if g:CCTreeWindowWidth == -1
+            exec "vert resize". b:maxwindowlen
+        else
+            exec "vertical resize". g:CCTreeWindowWidth
+        endif
+    else
+        if g:CCTreeWindowHeight != -1
+            let &winminheight = g:CCTreeWindowHeight
+           exec "resize".g:CCTreeWindowHeight
+        endif
+    endif
+
     exec "normal gg"
+
     " Need to force this again
     let &l:foldlevel=g:CCTreeMinVisibleDepth
     setlocal nomodifiable
@@ -472,27 +665,17 @@ function! s:CCTreeDisplayTreeInWindow(atree)
 endfunction
 
 function! s:CCTreeFoldExpr(line)
-    let len = strlen(matchstr(a:line,'+-\+'))
-    if len == 0
-        let len = 1
+    let lvl = b:treelist[v:lnum-1][1]
+    if lvl == 0
+        let lvl = 1
     endif
-    return '>'.len
+    return '>'.lvl
 endfunction
 
-
-function! s:GetFoldOffset(exp, base)
-    let retval = 1  
-    let cnt = a:exp
-    while cnt > 0
-        let retval += cnt * a:base
-        let cnt = cnt - 1
-    endwhile
-    return retval
-endfunction
 
 function! CCTreeFoldText()
-    return getline(v:foldstart).
-                \ " (+". (v:foldend - v:foldstart). 
+    let line = substitute(getline(v:foldstart), '[!@#]', ' ' , 'g')
+    return line. " (+". (v:foldend - v:foldstart). 
                 \  ')'. repeat(" ", winwidth(0))
 endfunction
 
@@ -543,16 +726,25 @@ endfunction
 
 
 function! s:CCTreeGetCurrentKeyword()
-    let s:CCTreekeyword = matchstr(expand("<cword>"), '\k\+')
+    let curline = line(".")
+    if foldclosed(curline) == -1
+        let curkeyword = matchstr(expand("<cword>"), '\k\+')
+        if curkeyword != ''
+            if curkeyword != s:CCTreekeyword || curline != s:CCTreekeywordLine
+                let s:CCTreekeyword = curkeyword
+                let s:CCTreekeywordLine = line(".")
+                return 1
+            endif
+        endif 
+    endif  
+    return -1
 endfunction
 
 function! s:CCTreeLoadBufferFromKeyword()
-    call s:CCTreeGetCurrentKeyword()
-    if s:CCTreekeyword == ''
+    if s:CCTreeGetCurrentKeyword() == -1
         return
     endif
 
-    let g:dbg = s:CCTreekeyword
     try 
         exec 'wincmd p'
     catch
@@ -576,27 +768,64 @@ function! s:CCTreePreviewBufferFromKeyword()
     if s:CCTreekeyword == ''
         return
     endif
+    silent! wincmd P
     exec "ptag ".s:CCTreekeyword
+endfunction
+
+
+function! s:CCTreeSanitizeCallDepth()
+    let error = 0
+    if g:CCTreeRecursiveDepth >= s:calltreemaxdepth
+        g:CCTreeRecursiveDepth = s:calltreemaxdepth
+        let error = 1
+    elseif g:CCTreeRecursiveDepth < 1 
+        g:CCTreeRecursiveDepth = 1
+        let error = 1
+    endif
+
+    if error == 1
+        call s:CCTreeWarningMsg('Depth out of bounds')
+    endif
+    return error
 endfunction
 
 function! s:CCTreeRecursiveDepthIncrease()
     let g:CCTreeRecursiveDepth += 1
-    call s:CCTreeUpdateForCurrentSymbol()
+    if s:CCTreeSanitizeCallDepth() == 0
+        call s:CCTreeUpdateForCurrentSymbol()
+    endif
 endfunction
 
 function! s:CCTreeRecursiveDepthDecrease()
     let g:CCTreeRecursiveDepth -= 1
-    call s:CCTreeUpdateForCurrentSymbol()
+    if s:CCTreeSanitizeCallDepth() == 0
+        call s:CCTreeUpdateForCurrentSymbol()
+    endif
 endfunction
 
 
-function! s:CCTreeCursorHoldHandle()
-    call s:CCTreeGetCurrentKeyword()
+" Use this function to determine the correct "g" flag
+" for substitution
+function! s:CCTreeGetSearchFlag(gvalue)
+    let ret = (!a:gvalue)* (&gdefault) + (!&gdefault)*(a:gvalue)
+    if ret == 1
+        return 'g'
+    endif
+    return ''
+endfunc
 
-    if s:CCTreekeyword == ''
-        match none
-    else 
-       exec "match CCTreeKeyword /\\<".s:CCTreekeyword."\\>/"
+function! s:CCTreeClearMarks()
+   let windict = winsaveview()
+   silent! exec "1,$s/[!#@]/ /e".s:CCTreeGetSearchFlag(1)
+   call winrestview(windict)
+endfunction
+
+function! s:CCTreeCursorHoldHandle()
+    if g:CCTreeHilightCallTree && s:CCTreeGetCurrentKeyword() != -1 
+       setlocal modifiable
+       call s:CCTreeClearMarks()
+       call s:CCTreeMarkCallTree(b:treelist, s:CCTreekeyword)
+       setlocal nomodifiable
     endif
 endfunction
 
@@ -610,10 +839,10 @@ function! s:CCTreeCompleteKwd(arglead, cmdline, cursorpos)
     endif
 endfunction
 
-function! s:CCTreeShowDB()
-   echo s:symtable
-endfunction
-command! CCTreeShowDB call s:CCTreeShowDB()
+"function! s:CCTreeShowDB()
+"   echo s:symtable
+"endfunction
+"command! CCTreeShowDB call s:CCTreeShowDB()
 
 augroup CCTreeGeneral
     au!
@@ -621,9 +850,22 @@ augroup CCTreeGeneral
 augroup END
 
 
-highlight link CCTreeKeyword Tag
-highlight link CCTreeMarkers LineNr
+
+"Standard display
 highlight link CCTreeSymbol  Function
+highlight link CCTreeMarkers LineNr
+highlight link CCTreeArrow CCTreeMarkers
+highlight link CCTreePathMark CCTreeArrow
+highlight link CCTreeHiPathMark CCTreePathMark
+
+" highlighted display
+highlight link CCTreeHiSymbol  TODO
+highlight link CCTreeHiMarkers StatusLine
+highlight link CCTreeHiArrow  CCTreeHiMarkers
+highlight link CCTreeUpArrowBlock CCTreeHiArrow
+
+highlight link CCTreeMarkExcl Ignore
+highlight link CCTreeMarkTilde Ignore
 
 
 " Define commands
@@ -655,7 +897,6 @@ au!
 " For now, use this hack to make *.h files work
 autocmd FileType * if &ft == 'c'|| &ft == 'cpp' |call s:CCTreeBufferKeyMappingsCreate()| endif
 augroup END
-
 
 
 " Cscope Digraph character compression/decompression routines
