@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: September 28, 2008
-"      Version: 0.4
+"  Last Change: October 6, 2008
+"      Version: 0.41
 "
 "=============================================================================
 " 
@@ -133,6 +133,10 @@
 "                 in incorrectly identified function blocks, etc.
 "
 "  History:
+"
+"           Version 0.41: October 6, 2008
+"                  1. Minor fix: Compressed cscope databases will load
+"                  incorrectly if encoding is not 8-bit
 "
 "           Version 0.4: September 28, 2008
 "                  1. Rewrite of "tree-display" code
@@ -357,9 +361,8 @@ function! s:CCTreeLoadDB(db_name)
     call filter(symbols, 'v:val =~ "^\t[`#$}]"')
 
     if s:dbcompressed == 1
-        let compressdict = s:Digraph_DictTable_Init()
         call s:CCTreeBusyStatusLineUpdate('Uncompressing database')
-        call map(symbols, 's:Digraph_Uncompress_Fast(v:val, compressdict)')
+        call s:Digraph_Uncompress(symbols)
     endif
 
     let s:symcount = len(symbols)
@@ -938,6 +941,18 @@ function! s:Digraph_Uncompress_Fast (value, dicttable)
         let retval = substitute(retval, '\C'.adichar, a:dicttable[char2nr(adichar)-128], "g")
     endfor
     return retval
+endfunction
+
+
+function! s:Digraph_Uncompress (symlist)
+    let compressdict = s:Digraph_DictTable_Init()
+
+" The encoding needs to be changed to 8-bit, otherwise we can't swap special 
+" 8-bit characters; restore after done
+    let encoding_save=&encoding
+    let &encoding="latin1"
+    call map(a:symlist, 's:Digraph_Uncompress_Fast(v:val, compressdict)')
+    let &encoding=encoding_save
 endfunction
 
 
