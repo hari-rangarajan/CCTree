@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: October 6, 2008
-"      Version: 0.41
+"  Last Change: October 17, 2008
+"      Version: 0.50
 "
 "=============================================================================
 " 
@@ -134,6 +134,10 @@
 "
 "  History:
 "
+"           Version 0.50: October 17, 2008
+"                 1. Optimizations for compact memory foot-print and 
+"                    improved compressed-database load speeds
+"
 "           Version 0.41: October 6, 2008
 "                  1. Minor fix: Compressed cscope databases will load
 "                  incorrectly if encoding is not 8-bit
@@ -178,7 +182,7 @@
 
 if !exists('loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
- " let loaded_cctree = 0
+  let loaded_cctree = 1
 else
    finish 
 endif
@@ -234,7 +238,7 @@ let s:CCTreekeywordLine = -1
 let s:currentkeyword = ''
 let s:currentdirection = ''
 let s:dbloaded = 0
-let s:symtable = {}
+let s:symhashtable = {}
 let s:save_statusline = ''
 let s:lastbufname = ''
 
@@ -255,26 +259,30 @@ function! DBGredir(...)
 endfunction
 
 
-function! s:CCTreeSymbolCreate(name)
-    if has_key(s:symtable, a:name)
-        return s:symtable[a:name]
+let s:symlistindex = 0
+let s:symlisttable = []
+
+function! s:CCTreeSymbolListAdd(name)
+    if !has_key(s:symhashtable, a:name)
+        let s:symhashtable[a:name] = s:symlistindex
+        call add(s:symlisttable, s:CCTreeSymbolDictCreate(a:name))
+        let s:symlistindex += 1
     endif
+    return s:symhashtable[a:name]
+endfunction
 
-    let s:symtable[a:name] = {}
-    let retval = s:symtable[a:name]
-    let retval['name']= a:name
-    let retval['child'] = {}
-    let retval['parent'] = {}
-
+function! s:CCTreeSymbolDictCreate(name)
+    let retval = {}
+    
+    let retval['n'] = a:name
+    let retval['c'] = ""
+    let retval['p'] = ""
     return retval
 endfunction
 
-function! s:CCTreeSymbolCalled(funcentry, newfunc)
-    let a:funcentry['child'][a:newfunc['name']] = 1
-endfunction
-
-function! s:CCTreeSymbolCallee(funcentry, newfunc)
-    let a:funcentry['parent'][a:newfunc['name']] = 1
+function! s:CCTreeSymbolMarkXRef(funcentryidx, newfuncidx)
+    let s:symlisttable[a:funcentryidx]['c'] .= (a:newfuncidx. ",")
+    let s:symlisttable[a:newfuncidx]['p'] .= (a:funcentryidx. ",")
 endfunction
 
 
@@ -307,18 +315,44 @@ function! CCTreeStatusLine()
     return s:pluginname. " ". s:currentstatus. " -- ". s:statusextra
 endfunction
 
+
+let s:progresscurrent = 0
+let s:progressmax = 0
+
+function! s:CCTreeProgressBarInit(maxcount)
+        let s:progressmax = a:maxcount
+        let s:progress1percent = a:maxcount/100
+        let s:progresspercent = 0
+endfunction
+
+
+function! s:CCTreeProgressBarTick(count)
+        let s:progresscurrent += a:count
+        if s:progress1percent < s:progresscurrent
+            let s:progresscurrent = 0
+            let s:progresspercent += 1
+            call s:CCTreeBusyStatusLineExtraInfo("Processing ". s:progresspercent . 
+                        \ "\%, total ". s:progressmax. " items")
+        endif
+endfunction
+
+
 function! s:CCTreeWarningMsg(msg)
     echohl WarningMsg
     echo a:msg
     echohl None
 endfunction
 
+function! s:CCTreePreprocessFilter (val)
+    call s:CCTreeProgressBarTick(1)
+    return a:val =~ "^\t[`#$}]|^\k"
+endfunction
 
 function! s:CCTreeLoadDB(db_name)
-    let curfunc =  {}
-    let newfunc =  {}
-    let s:symtable = {}
-    let s:dbloaded = 0
+    let curfuncidx = -1
+    let newfuncidx =  -1
+
+    call s:CCTreeUnloadDB()
 
     let cscope_db = a:db_name
     if cscope_db == ''
@@ -341,8 +375,6 @@ function! s:CCTreeLoadDB(db_name)
         return
     endif
 
-    let s:symprogress = 0
-    let s:symcur = 0
     let symindex = 0
     let symlocalstart = 0
     let symlocalcount = 0
@@ -359,40 +391,31 @@ function! s:CCTreeLoadDB(db_name)
     endif
     " Filter-out lines that doesn't have relevant information
     call filter(symbols, 'v:val =~ "^\t[`#$}]"')
-
-    if s:dbcompressed == 1
-        call s:CCTreeBusyStatusLineUpdate('Uncompressing database')
-        call s:Digraph_Uncompress(symbols)
-    endif
-
-    let s:symcount = len(symbols)
-    let s:symcount1percent = s:symcount/100
+    call s:CCTreeProgressBarInit(len(symbols))
 
     call s:CCTreeBusyStatusLineUpdate('Analyzing database')
     for a in symbols
-        let s:symcur += 1
-        if s:symcount1percent < s:symcur
-            let s:symcur = 0
-            let s:symprogress += 1
-            call s:CCTreeBusyStatusLineExtraInfo("Processing ". s:symprogress. 
-                        \ "\%, total ". s:symcount. " items")
-            redrawstatus
-        endif
-
+        call s:CCTreeProgressBarTick(1)
+        
         if a[1] == "`"
-             if !empty(curfunc)
-                 let newfunc = s:CCTreeSymbolCreate(a[2:])
-                 call s:CCTreeSymbolCalled(curfunc, newfunc)
-                 call s:CCTreeSymbolCallee(newfunc, curfunc)
+             if curfuncidx != -1
+                 let newfuncidx = s:CCTreeSymbolListAdd(a[2:])
+                 call s:CCTreeSymbolMarkXRef(curfuncidx, newfuncidx)
              endif
         elseif a[1] == "$"
-            let curfunc = s:CCTreeSymbolCreate(a[2:])
+            let curfuncidx = s:CCTreeSymbolListAdd(a[2:])
         elseif a[1] == "#"
-            call s:CCTreeSymbolCreate(a[2:])
+            call s:CCTreeSymbolListAdd(a[2:])
         elseif a[1] == "}"
-            let curfunc = {}
+            let curfuncidx = -1
         endif
     endfor
+    
+    if s:dbcompressed == 1
+        call s:CCTreeBusyStatusLineUpdate('Uncompressing database')
+        " inplace uncompression
+        call s:Digraph_Uncompress(s:symlisttable, s:symhashtable)
+    endif
 
     call s:CCTreeRestoreStatusLine()
     let s:dbloaded = 1
@@ -401,28 +424,40 @@ endfunction
 
 
 function! s:CCTreeUnloadDB()
-    unlet s:symtable
+    unlet s:symlisttable
+    unlet s:symhashtable
     let s:dbloaded = 0
     " Force cleanup
     call garbagecollect()
+
+    let s:symlisttable = []
+    let s:symhashtable = {}
 endfunction 
 
+function! s:CCTreeGetSymbolXRef(symname, direction)
+    let symentryidx = s:symhashtable[a:symname]
+    let symidslist = split(s:symlisttable[symentryidx][a:direction], ",")
+    let xrefs = {}
+
+    for asymid in symidslist
+        let xrefs[s:symlisttable[asymid]['n']] = 1
+    endfor
+    return xrefs
+endfunction
 
 function! s:CCTreeGetCallsForSymbol(symname, depth, direction)
     if (a:depth > g:CCTreeRecursiveDepth) 
         return {}
     endif
 
-    if !has_key(s:symtable, a:symname)
+    if !has_key(s:symhashtable, a:symname)
         return {}            
     endif
-
-    let symentry = s:symtable[a:symname]
 
     let calltree_dict = {}
     let calltree_dict['entry'] = a:symname
 
-    for entry in keys(symentry[a:direction])
+    for entry in keys(s:CCTreeGetSymbolXRef(a:symname, a:direction))
         if !has_key(calltree_dict, 'childlinks')
             let calltree_dict['childlinks'] = []
         endif
@@ -455,7 +490,7 @@ function! CCTreePreviewStatusLine()
     let rtitle= s:windowtitle. ' -- '. s:currentkeyword. 
             \'[Depth: '. g:CCTreeRecursiveDepth.','
     
-    if s:currentdirection == 'parent' 
+    if s:currentdirection == 'p' 
         let rtitle .= "(Reverse)"
     else
         let rtitle .= "(Forward)"
@@ -559,9 +594,9 @@ function! s:CCTreeBuildDisplayPrependText(lenlist)
     let pptxt = "  "
     let treepptext = repeat([" "], s:calltreemaxdepth)
 
-   if s:currentdirection == 'parent' 
+   if s:currentdirection == 'p' 
         let directiontxt = "< "
-    elseif s:currentdirection == 'child'
+    elseif s:currentdirection == 'c'
         let directiontxt = "> "
    endif
 
@@ -772,6 +807,9 @@ function! s:CCTreePreviewBufferFromKeyword()
         return
     endif
     silent! wincmd P
+    if !&previewwindow 
+        wincmd p
+    endif
     exec "ptag ".s:CCTreekeyword
 endfunction
 
@@ -836,16 +874,11 @@ endfunction
 " Command line completion function to return names from the db
 function! s:CCTreeCompleteKwd(arglead, cmdline, cursorpos)
     if a:arglead == ''
-        return keys(s:symtable)
+        return keys(s:symhashtable)
     else
-        return filter(keys(s:symtable), 'v:val =~? a:arglead')
+        return filter(keys(s:symhashtable), 'v:val =~? a:arglead')
     endif
 endfunction
-
-"function! s:CCTreeShowDB()
-"   echo s:symtable
-"endfunction
-"command! CCTreeShowDB call s:CCTreeShowDB()
 
 augroup CCTreeGeneral
     au!
@@ -875,9 +908,9 @@ highlight link CCTreeMarkTilde Ignore
 command! -nargs=? -complete=file CCTreeLoadDB  call s:CCTreeLoadDB(<q-args>)
 command! -nargs=0 CCTreeUnLoadDB               call s:CCTreeUnloadDB()
 command! -nargs=? -complete=customlist,s:CCTreeCompleteKwd
-        \ CCTreeTraceForward call s:CCTreeTraceTreeForSymbol(<q-args>, 'child')
+        \ CCTreeTraceForward call s:CCTreeTraceTreeForSymbol(<q-args>, 'c')
 command! -nargs=? -complete=customlist,s:CCTreeCompleteKwd CCTreeTraceReverse  
-            \ call s:CCTreeTraceTreeForSymbol(<q-args>, 'parent')
+            \ call s:CCTreeTraceTreeForSymbol(<q-args>, 'p')
 command! -nargs=0 CCTreeLoadBufferUsingTag call s:CCTreeLoadBufferFromKeyword()
 command! -nargs=0 CCTreePreviewBufferUsingTag call s:CCTreePreviewBufferFromKeyword()
 command! -nargs=0 CCTreeRecurseDepthPlus call s:CCTreeRecursiveDepthIncrease()
@@ -944,14 +977,33 @@ function! s:Digraph_Uncompress_Fast (value, dicttable)
 endfunction
 
 
-function! s:Digraph_Uncompress (symlist)
+function! s:Digraph_Uncompress_filter_loop(compressedsym, symlist, symhash, cmpdict)
+    let idx = a:symhash[a:compressedsym]
+    let uncmpname = s:Digraph_Uncompress_Fast(a:compressedsym, a:cmpdict)
+    let a:symhash[uncmpname] = idx
+    let a:symlist[idx]['n'] = uncmpname
+    call s:CCTreeProgressBarTick(1)
+    return 0
+endfunction
+
+function! s:Digraph_Uncompress (symlist, symhash)
     let compressdict = s:Digraph_DictTable_Init()
 
+    call s:CCTreeProgressBarInit(len(a:symhash))
 " The encoding needs to be changed to 8-bit, otherwise we can't swap special 
 " 8-bit characters; restore after done
     let encoding_save=&encoding
     let &encoding="latin1"
-    call map(a:symlist, 's:Digraph_Uncompress_Fast(v:val, compressdict)')
+
+    for compressedsym in keys(a:symhash)
+        let idx = a:symhash[compressedsym]
+        let uncmpname = s:Digraph_Uncompress_Fast(compressedsym, compressdict)
+        let a:symhash[uncmpname] = idx
+        " free the old entry
+        unlet a:symhash[compressedsym]
+        let a:symlist[idx]['n'] = uncmpname
+        call s:CCTreeProgressBarTick(1)
+    endfor
     let &encoding=encoding_save
 endfunction
 
