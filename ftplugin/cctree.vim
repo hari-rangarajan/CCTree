@@ -134,6 +134,9 @@
 "
 "  History:
 "
+"           Version 0.60: November 26, 2008
+"                 1. Added support for source-file dependency tree
+"
 "           Version 0.50: October 17, 2008
 "                 1. Optimizations for compact memory foot-print and 
 "                    improved compressed-database load speeds
@@ -182,7 +185,7 @@
 
 if !exists('loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
-  let loaded_cctree = 1
+  "let loaded_cctree = 1
 else
    finish 
 endif
@@ -233,6 +236,8 @@ let s:windowtitle = 'CCTree-Preview'
 let s:CCTreekeyword = ''
 let s:CCTreekeywordLine = -1
 
+" Definition of a keyword...
+let s:CCTreeKeywordRegEx = '[A-Za-z0-9_\\\.\/]\+'
 
 " Other state variables
 let s:currentkeyword = ''
@@ -351,6 +356,8 @@ endfunction
 function! s:CCTreeLoadDB(db_name)
     let curfuncidx = -1
     let newfuncidx =  -1
+    let curfileidx = -1
+    let newfileidx =  -1
 
     call s:CCTreeUnloadDB()
 
@@ -390,7 +397,7 @@ function! s:CCTreeLoadDB(db_name)
         let s:dbcompressed = 0
     endif
     " Filter-out lines that doesn't have relevant information
-    call filter(symbols, 'v:val =~ "^\t[`#$}]"')
+    call filter(symbols, 'v:val =~ "^\t[`#$}@\~]"')
     call s:CCTreeProgressBarInit(len(symbols))
 
     call s:CCTreeBusyStatusLineUpdate('Analyzing database')
@@ -408,6 +415,11 @@ function! s:CCTreeLoadDB(db_name)
             call s:CCTreeSymbolListAdd(a[2:])
         elseif a[1] == "}"
             let curfuncidx = -1
+        elseif a[1] == "~"
+            let newfileidx = s:CCTreeSymbolListAdd(a[3:])
+            call s:CCTreeSymbolMarkXRef(curfileidx, newfileidx)
+        elseif a[1] == "@"
+            let curfileidx = s:CCTreeSymbolListAdd(a[2:])
         endif
     endfor
     
@@ -520,12 +532,12 @@ function! s:CCTreePreviewWindowEnter()
 
         syntax match CCTreePathMark /\s[|+]/ contained
         syntax match CCTreeArrow  /-*[<>]/ contained
-        syntax match CCTreeSymbol  / \k\+/  contained
+        syntax match CCTreeSymbol  / [A-Za-z0-9_\.\\\/]\+/  contained
  
         syntax region CCTreeSymbolLine start="^\s" end="$" contains=CCTreeArrow,CCTreePathMark,CCTreeSymbol oneline
 
         syntax match CCTreeHiArrow  /-*[<>]/ contained
-        syntax match CCTreeHiSymbol  / \k\+/  contained
+        syntax match CCTreeHiSymbol  / [A-Za-z0-9_\.\\\/]\+/  contained
         syntax match CCTreeHiPathMark /\s[|+]/ contained
         
         syntax match CCTreeMarkExcl  /^[!#]/ contained
@@ -761,12 +773,12 @@ function! s:CCTreeUpdateForCurrentSymbol()
         call s:CCTreeDisplayTreeInWindow(atree)
     endif
 endfunction
-
+ 
 
 function! s:CCTreeGetCurrentKeyword()
     let curline = line(".")
     if foldclosed(curline) == -1
-        let curkeyword = matchstr(expand("<cword>"), '\k\+')
+        let curkeyword = matchstr(getline("."), s:CCTreeKeywordRegEx)
         if curkeyword != ''
             if curkeyword != s:CCTreekeyword || curline != s:CCTreekeywordLine
                 let s:CCTreekeyword = curkeyword
@@ -789,10 +801,16 @@ function! s:CCTreeLoadBufferFromKeyword()
         call s:CCTreeWarningMsg('No buffer to load file')
     finally
         if (cscope_connection() > 0)
-            exec "cstag ".s:CCTreekeyword
+            try 
+                exec "cs find g ".s:CCTreekeyword
+            catch
+                " cheap hack
+                exec "cs find f ".s:CCTreekeyword
+            endtry
         else
             try
-                exec "tag ".s:CCTreekeyword
+                " Ctags is smart enough to figure the path
+                exec "tag ".fnamemodify(s:CCTreekeyword, ":t")
             catch /^Vim\%((\a\+)\)\=:E426/
                 call s:CCTreeWarningMsg('Tag '. s:CCTreekeyword .' not found')
                 wincmd p
@@ -916,11 +934,29 @@ command! -nargs=0 CCTreePreviewBufferUsingTag call s:CCTreePreviewBufferFromKeyw
 command! -nargs=0 CCTreeRecurseDepthPlus call s:CCTreeRecursiveDepthIncrease()
 command! -nargs=0 CCTreeRecurseDepthMinus call s:CCTreeRecursiveDepthDecrease()
 
+
+function! s:CCTreeGetKeyword()
+    let keyw = expand("<cword>")
+    let keyf = expand("<cfile>")
+
+    if keyw != keyf 
+        if has_key(s:symhashtable, keyf)
+            return keyf
+        elseif has_key(s:symhashtable, keyw)
+            return keyw
+        endif
+    else
+        return keyw
+    endif
+    return ''
+endfunction
+
+
 function! s:CCTreeBufferKeyMappingsCreate()
-     nnoremap <buffer> <silent> <C-\><
-                 \ :CCTreeTraceReverse <C-R>=expand("<cword>")<CR><CR> 
-     nnoremap <buffer> <silent> <C-\>>
-                 \ :CCTreeTraceForward <C-R>=expand("<cword>")<CR><CR> 
+     let func_expr = '<SNR>'.s:sid.'CCTreeGetKeyword()'
+     exec 'nnoremap <buffer> <silent> <C-\>< :CCTreeTraceReverse <C-R>='.func_expr.'<CR><CR>'
+     exec 'nnoremap <buffer> <silent> <C-\>> :CCTreeTraceForward <C-R>='.func_expr.'<CR><CR>'
+
      nnoremap <buffer> <silent> <C-\>= :CCTreeRecurseDepthPlus<CR> 
      nnoremap <buffer> <silent> <C-\>- :CCTreeRecurseDepthMinus<CR> 
 endfunction
