@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: October 17, 2008
-"      Version: 0.50
+"  Last Change: December 24, 2008
+"      Version: 0.61
 "
 "=============================================================================
 " 
@@ -134,6 +134,10 @@
 "
 "  History:
 "
+"           Version 0.61: December 24, 2008
+"                 1. Fixed bug when processing include files
+"                 2. Remove 'set ruler' option
+"
 "           Version 0.60: November 26, 2008
 "                 1. Added support for source-file dependency tree
 "
@@ -176,6 +180,7 @@
 "
 "   Thanks:
 "
+"    Arun Chaganty/Timo Tiefel	    (Ver 0.60 -- bug report)
 "    Michael Wookey                 (Ver 0.4 -- Testing/bug report/patches)
 "    Yegappan Lakshmanan            (Ver 0.2 -- Patches)
 "
@@ -419,7 +424,9 @@ function! s:CCTreeLoadDB(db_name)
             let newfileidx = s:CCTreeSymbolListAdd(a[3:])
             call s:CCTreeSymbolMarkXRef(curfileidx, newfileidx)
         elseif a[1] == "@"
-            let curfileidx = s:CCTreeSymbolListAdd(a[2:])
+	    if a[2] != ""
+                let curfileidx = s:CCTreeSymbolListAdd(a[2:])
+	    endif
         endif
     endfor
     
@@ -526,7 +533,6 @@ function! s:CCTreePreviewWindowEnter()
         setlocal bufhidden=wipe
         setlocal noswapfile
         setlocal nonumber
-        setlocal noruler
         setlocal statusline=%=%{CCTreePreviewStatusLine()}
 
 
