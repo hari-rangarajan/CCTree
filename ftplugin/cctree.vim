@@ -3,7 +3,7 @@
 "
 " Script Info and Documentation 
 "=============================================================================
-"    Copyright: Copyright (C) August 2008, Hari Rangarajan
+"    Copyright: Copyright (C) August 2008 - 2010, Hari Rangarajan
 "               Permission is hereby granted to use and distribute this code,
 "               with or without modifications, provided that this copyright
 "               notice is copied with it. Like anything else that's free,
@@ -17,7 +17,7 @@
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
 "  Last Change: July 12, 2009
-"      Version: 0.65
+"      Version: 0.70
 "
 "=============================================================================
 " 
@@ -55,11 +55,21 @@
 "           (Please note that it might take a while depending on the 
 "           database size)
 "
+"           Append database with command ":CCTreeAppendDB"
+"	    Allows multiple cscope files to be loaded and cross-referenced
+"	    Illustration:
+"	    :CCTreeAppendDB ./cscope.out
+"	    :CCTreeAppendDB ./dir1/cscope.out
+"	    :CCTreeAppendDB ./dir2/cscope.out
+"
 "           A database name, i.e., my_cscope.out, can be specified with 
 "           the command. If not provided, a prompt will ask for the 
 "           filename; default is cscope.out.
 "
-"           To unload database, use command ":CCTreeUnLoadDB"
+"           To show loaded databases, use command ":CCTreeShowLoadedDBs"
+"
+"           To unload all databases, use command ":CCTreeUnLoadDB"
+"	    Note: There is no provision to unload databases individually
 "
 "           Default Mappings:
 "             Get reverse call tree for symbol  <C-\><
@@ -72,6 +82,7 @@
 "
 "          Command List:
 "             CCTreeLoadDB                <dbname>
+"             CCTreeAppendDB              <dbname>
 "             CCTreeUnLoadDB             
 "             CCTreeTraceForward          <symbolname>
 "             CCTreeTraceReverse          <symbolname>     
@@ -133,6 +144,12 @@
 "                 in incorrectly identified function blocks, etc.
 "
 "  History:
+"           Version 0.71: May 11, 2010
+"           	  1. Fix script bug
+
+"           Version 0.70: May 8, 2010
+"           	  1. Functionality to load multiple cscope databases
+"
 "           Version 0.65: July 12, 2009
 "           	  1. Toggle preview window
 "
@@ -192,7 +209,7 @@
 
 if !exists('loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
-  "let loaded_cctree = 1
+  let loaded_cctree = 1
 else
    finish 
 endif
@@ -253,6 +270,7 @@ let s:dbloaded = 0
 let s:symhashtable = {}
 let s:save_statusline = ''
 let s:lastbufname = ''
+let s:loadedDBs = []
 
 " Turn on/off debugs
 let s:tag_debug=0
@@ -360,13 +378,25 @@ function! s:CCTreePreprocessFilter (val)
     return a:val =~ "^\t[`#$}]|^\k"
 endfunction
 
+
 function! s:CCTreeLoadDB(db_name)
+	call s:CCTreeLoadDBExt(a:db_name, 1)
+endfunction
+
+function! s:CCTreeAppendDB(db_name)
+	call s:CCTreeLoadDBExt(a:db_name, 0)
+endfunction
+
+
+function! s:CCTreeLoadDBExt(db_name, clear)
     let curfuncidx = -1
     let newfuncidx =  -1
     let curfileidx = -1
     let newfileidx =  -1
 
-    call s:CCTreeUnloadDB()
+    if a:clear == 1
+    	call s:CCTreeUnloadDB()
+    endif
 
     let cscope_db = a:db_name
     if cscope_db == ''
@@ -380,6 +410,8 @@ function! s:CCTreeLoadDB(db_name)
         call s:CCTreeWarningMsg('Cscope database ' . cscope_db . ' not found')
         return
     endif
+	
+    call add(s:loadedDBs, getcwd().'/'.a:db_name)
 
     call s:CCTreeBusyStatusLineUpdate('Loading database')
     let symbols = readfile(cscope_db)
@@ -443,16 +475,29 @@ function! s:CCTreeLoadDB(db_name)
     echomsg "Done building database"
 endfunction
 
+function! s:CCTreeShowLoadedDBs()
+    let i = 1
+    echomsg "CCTree: List of loaded cscope databases"
+    echomsg "---------------------------------------"
+   for aDB in s:loadedDBs
+	echomsg i." ".aDB
+	let i = i + 1
+   endfor
+endfunction
 
 function! s:CCTreeUnloadDB()
     unlet s:symlisttable
     unlet s:symhashtable
+    unlet s:loadedDBs
+
     let s:dbloaded = 0
     " Force cleanup
     call garbagecollect()
 
     let s:symlisttable = []
     let s:symhashtable = {}
+
+    let s:loadedDBs = []
 endfunction 
 
 function! s:CCTreeGetSymbolXRef(symname, direction)
@@ -961,7 +1006,9 @@ highlight link CCTreeMarkTilde Ignore
 
 " Define commands
 command! -nargs=? -complete=file CCTreeLoadDB  call s:CCTreeLoadDB(<q-args>)
+command! -nargs=? -complete=file CCTreeAppendDB  call s:CCTreeAppendDB(<q-args>)
 command! -nargs=0 CCTreeUnLoadDB               call s:CCTreeUnloadDB()
+command! -nargs=0 CCTreeShowLoadedDBs          call s:CCTreeShowLoadedDBs()
 command! -nargs=? -complete=customlist,s:CCTreeCompleteKwd
         \ CCTreeTraceForward call s:CCTreeTraceTreeForSymbol(<q-args>, 'c')
 command! -nargs=? -complete=customlist,s:CCTreeCompleteKwd CCTreeTraceReverse  
