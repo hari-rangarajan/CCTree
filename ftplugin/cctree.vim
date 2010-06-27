@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: July 12, 2009
-"      Version: 0.70
+"  Last Change: June 23, 2010
+"      Version: 0.75
 "
 "=============================================================================
 " 
@@ -71,6 +71,9 @@
 "           To unload all databases, use command ":CCTreeUnLoadDB"
 "	    Note: There is no provision to unload databases individually
 "
+"	    To have multiple CCTree preview windows, use ":CCTreeWindowSaveCopy"
+"	    Note: Once saved, only the depth of the preview window can be changed
+"
 "           Default Mappings:
 "             Get reverse call tree for symbol  <C-\><
 "             Get forward call tree for symbol  <C-\>>
@@ -80,6 +83,8 @@
 "             Open symbol in other window       <CR>
 "             Preview symbol in other window    <Ctrl-P>
 "
+"	      Save copy of preview window       <C-\>y
+"
 "          Command List:
 "             CCTreeLoadDB                <dbname>
 "             CCTreeAppendDB              <dbname>
@@ -88,7 +93,7 @@
 "             CCTreeTraceReverse          <symbolname>     
 "             CCTreeRecurseDepthPlus     
 "             CCTreeRecurseDepthMinus    
-"
+"	      CCTreeWindowSaveCopy
 "
 "
 "          Settings:
@@ -144,7 +149,11 @@
 "                 in incorrectly identified function blocks, etc.
 "
 "  History:
-"           Version 0.71: May 11, 2010
+"           Version 0.75: June 23, 2010
+"           	  1. Support for saving CCTree preview window; multiple 
+"			CCTree windows can now be open
+"
+"          Version 0.71: May 11, 2010
 "           	  1. Fix script bug
 
 "           Version 0.70: May 8, 2010
@@ -211,7 +220,7 @@ if !exists('loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
   let loaded_cctree = 1
 else
-   finish 
+   "finish 
 endif
 
 " Line continuation used here
@@ -255,6 +264,7 @@ endif
 " Plugin related local variables
 let s:pluginname = 'CCTree'
 let s:windowtitle = 'CCTree-Preview'
+let s:windowsavetitle = 'CCTree-View-Copy'
 
 " There could be duplicate keywords on different lines
 let s:CCTreekeyword = ''
@@ -539,7 +549,7 @@ func! s:FindOpenBuffer(filename)
     "tabpagebuflist(tabpagenr())
 
     for bufnrs in range(1, bnrHigh)
-        if (bufexists(bufnrs) == 1 && bufname(bufnrs) == a:filename)
+        if (bufexists(bufnrs) == 1 && bufname(bufnrs) == a:filename && bufloaded(bufnrs) != 0 )
             return bufnrs
         endif
     endfor
@@ -564,18 +574,33 @@ function! s:CCTreePreviewWindowLeave()
     call s:FindOpenWindow(s:lastbufname)
 endfunction
 
-function! CCTreePreviewStatusLine()
-    let rtitle= s:windowtitle. ' -- '. s:currentkeyword. 
-            \'[Depth: '. g:CCTreeRecursiveDepth.','
-    
-    if s:currentdirection == 'p' 
-        let rtitle .= "(Reverse)"
+function! s:CCTreeMiscConvertDirectionToString(symp)
+    if a:symp == 'p' 
+        let rt = "(Reverse)"
     else
-        let rtitle .= "(Forward)"
+        let rt = "(Forward)"
     endif
+
+    return rt
+endfunction
+
+function! s:CCTreePreviewStatusLineInit()
+	if exists("b:currentkeyword") == 0
+		let b:currentkeyword = ''
+	endif
+	if exists("b:currentdirection") == 0
+		let b:currentdirection = ''
+	endif
+endfunction
+
+function! CCTreePreviewStatusLine()
+    let rtitle= s:windowtitle. ' -- '. b:currentkeyword. 
+            \'[Depth: '. g:CCTreeRecursiveDepth.','
+    let rtitle .= s:CCTreeMiscConvertDirectionToString(b:currentdirection)
 
     return rtitle.']'
 endfunction
+
 
 function! s:CCTreePreviewWindowEnter()
     let s:lastbufname = bufname("%")
@@ -592,6 +617,8 @@ function! s:CCTreePreviewWindowEnter()
         setlocal bufhidden=hide
         setlocal noswapfile
         setlocal nonumber
+
+	call s:CCTreePreviewStatusLineInit()
         setlocal statusline=%=%{CCTreePreviewStatusLine()}
 
 
@@ -621,9 +648,12 @@ function! s:CCTreePreviewWindowEnter()
         set cpoptions&vim
 
         call s:CCTreeBufferKeyMappingsCreate() 
+	
+
         nnoremap <buffer> <silent> <C-p>  :CCTreePreviewBufferUsingTag<CR>
         nnoremap <buffer> <silent> <CR>  :CCTreeLoadBufferUsingTag<CR>
         nnoremap <buffer> <silent> <2-LeftMouse> :CCTreeLoadBufferUsingTag<CR>
+
 
         let &cpoptions = cpo_save
     endif
@@ -741,16 +771,28 @@ function! s:CCTreeMarkCallTree(treelst, keyword)
     endfor
 endfunction
 
+function! s:CCTreePreviewWindowSave()
+    if s:FindOpenWindow(s:windowtitle) == 1
+		silent! exec ":f ". s:windowsavetitle. ":". b:currentkeyword."(".b:currentdirection.")"
+		setlocal statusline=%=%{CCTreePreviewStatusLine()}
+		echomsg s:windowtitle. " window saved"
+    else
+   		echomsg s:windowtitle. " could not be found"
+    endif
+endfunction
+
 function! s:CCTreeDisplayWindowToggle()
     if s:FindOpenWindow(s:windowtitle) == 1
 	silent! exec "hide"
     else 
 	let winbufnr = s:FindOpenBuffer(s:windowtitle)
-	if winbufnr !=0 
+	if winbufnr > 0 
 	   call s:CCTreePreviewWindowEnter()
 	   silent! exec "buf ".winbufnr
 	   call s:CCTreeWindowResize()
 	   silent! exec "wincmd p"
+	else
+	   echomsg s:windowtitle. " not open."
 	endif
     endif
 endfunction
@@ -775,6 +817,7 @@ function! s:CCTreeDisplayTreeInWindow(atree)
     let incctreewin = 1
     if (bufname('%') != s:windowtitle) 
     	call s:CCTreePreviewWindowEnter()
+	call s:CCTreeStoreStateInBuffer(s:currentkeyword, s:currentdirection)
         let incctreewin = 0
     endif
 
@@ -815,6 +858,11 @@ endfunction
 function! s:CCTreeStoreState(symbol, direction)
     let s:currentkeyword = a:symbol
     let s:currentdirection = a:direction
+endfunction
+
+function! s:CCTreeStoreStateInBuffer(symbol, direction)
+    let b:currentkeyword = a:symbol
+    let b:currentdirection = a:direction
 endfunction
 
 function! s:CCTreeDBIsLoaded()
@@ -1018,6 +1066,7 @@ command! -nargs=0 CCTreePreviewBufferUsingTag call s:CCTreePreviewBufferFromKeyw
 command! -nargs=0 CCTreeRecurseDepthPlus call s:CCTreeRecursiveDepthIncrease()
 command! -nargs=0 CCTreeRecurseDepthMinus call s:CCTreeRecursiveDepthDecrease()
 command! -nargs=0 CCTreeWindowToggle 	call s:CCTreeDisplayWindowToggle()
+command! -nargs=0 CCTreeWindowSaveCopy call s:CCTreePreviewWindowSave()
 
 
 function! s:CCTreeGetKeyword()
@@ -1041,6 +1090,7 @@ function! s:CCTreeBufferKeyMappingsCreate()
      let func_expr = '<SNR>'.s:sid.'CCTreeGetKeyword()'
      exec 'nnoremap <buffer> <silent> <C-\>< :CCTreeTraceReverse <C-R>='.func_expr.'<CR><CR>'
      exec 'nnoremap <buffer> <silent> <C-\>> :CCTreeTraceForward <C-R>='.func_expr.'<CR><CR>'
+     exec 'nnoremap <silent> <C-\>y :CCTreeWindowSaveCopy<CR>'
      exec 'nnoremap <silent> <C-\>w :CCTreeWindowToggle<CR>'
 
      nnoremap <buffer> <silent> <C-\>= :CCTreeRecurseDepthPlus<CR> 
