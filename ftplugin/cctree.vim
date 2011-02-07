@@ -3,7 +3,7 @@
 "
 " Script Info and Documentation 
 "=============================================================================
-"    Copyright: Copyright (C) August 2008 - 2010, Hari Rangarajan
+"    Copyright: Copyright (C) August 2008 - 2011, Hari Rangarajan
 "               Permission is hereby granted to use and distribute this code,
 "               with or without modifications, provided that this copyright
 "               notice is copied with it. Like anything else that's free,
@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: June 23, 2010
-"      Version: 0.75
+"  Last Change: February 4, 2011
+"      Version: 0.80
 "
 "=============================================================================
 " 
@@ -149,6 +149,8 @@
 "                 in incorrectly identified function blocks, etc.
 "
 "  History:
+"           Version 0.80: February 4, 2011
+"                 1. Reduce memory usage by removing unused xref symbols
 "           Version 0.75: June 23, 2010
 "           	  1. Support for saving CCTree preview window; multiple 
 "			CCTree windows can now be open
@@ -220,7 +222,7 @@ if !exists('loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
   let loaded_cctree = 1
 else
-   "finish 
+   finish 
 endif
 
 " Line continuation used here
@@ -421,7 +423,9 @@ function! s:CCTreeLoadDBExt(db_name, clear)
         return
     endif
 	
-    call add(s:loadedDBs, getcwd().'/'.a:db_name)
+    let dbFullPath = getcwd().'/'.cscope_db
+
+    call add(s:loadedDBs, dbFullPath." ".getfsize(dbFullPath)." ".strftime("%c", getftime(dbFullPath)))
 
     call s:CCTreeBusyStatusLineUpdate('Loading database')
     let symbols = readfile(cscope_db)
@@ -475,14 +479,15 @@ function! s:CCTreeLoadDBExt(db_name, clear)
     endfor
     
     if s:dbcompressed == 1
-        call s:CCTreeBusyStatusLineUpdate('Uncompressing database')
-        " inplace uncompression
-        call s:Digraph_Uncompress(s:symlisttable, s:symhashtable)
+        call s:CCTreeBusyStatusLineUpdate('Post processing database (decompress/cleanup)')
+    else
+        call s:CCTreeBusyStatusLineUpdate('Post processing database (cleanup)')
     endif
+    call s:Digraph_PostProcess(s:symlisttable, s:symhashtable)
 
     call s:CCTreeRestoreStatusLine()
     let s:dbloaded = 1
-    echomsg "Done building database"
+    echomsg "Done loading database. Xref Symbol Count: ".len(s:symhashtable)
 endfunction
 
 function! s:CCTreeShowLoadedDBs()
@@ -501,13 +506,15 @@ function! s:CCTreeUnloadDB()
     unlet s:loadedDBs
 
     let s:dbloaded = 0
-    " Force cleanup
-    call garbagecollect()
 
     let s:symlisttable = []
     let s:symhashtable = {}
+    let s:symlistindex = 0
 
     let s:loadedDBs = []
+    
+    " Force cleanup
+    call garbagecollect()
 endfunction 
 
 function! s:CCTreeGetSymbolXRef(symname, direction)
@@ -1158,25 +1165,33 @@ function! s:Digraph_Uncompress_filter_loop(compressedsym, symlist, symhash, cmpd
     return 0
 endfunction
 
-function! s:Digraph_Uncompress (symlist, symhash)
-    let compressdict = s:Digraph_DictTable_Init()
-
+function! s:Digraph_PostProcess (symlist, symhash)
     call s:CCTreeProgressBarInit(len(a:symhash))
 " The encoding needs to be changed to 8-bit, otherwise we can't swap special 
 " 8-bit characters; restore after done
-    let encoding_save=&encoding
-    let &encoding="latin1"
+    if s:dbcompressed == 1
+    	let encoding_save=&encoding
+	let &encoding="latin1"
+	let compressdict = s:Digraph_DictTable_Init()
+    endif
 
-    for compressedsym in keys(a:symhash)
-        let idx = a:symhash[compressedsym]
-        let uncmpname = s:Digraph_Uncompress_Fast(compressedsym, compressdict)
-        let a:symhash[uncmpname] = idx
-        " free the old entry
-        unlet a:symhash[compressedsym]
-        let a:symlist[idx]['n'] = uncmpname
+    for asym in keys(a:symhash)
+        let idx = a:symhash[asym]
+	let val = a:symlist[idx]
+	if val.p == "" && val.c == ""
+		unlet a:symhash[asym]
+        elseif s:dbcompressed == 1
+		let uncmpname = s:Digraph_Uncompress_Fast(asym, compressdict)
+		let a:symhash[uncmpname] = idx
+		" free the old entry
+		unlet a:symhash[asym]
+		let val.n = uncmpname
+	endif
         call s:CCTreeProgressBarTick(1)
     endfor
-    let &encoding=encoding_save
+    if s:dbcompressed == 1
+        let &encoding=encoding_save
+    endif
 endfunction
 
 
