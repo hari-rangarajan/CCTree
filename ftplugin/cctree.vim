@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: February 4, 2011
-"      Version: 0.80
+"  Last Change: February 11, 2011
+"      Version: 0.85
 "
 "=============================================================================
 " 
@@ -89,12 +89,12 @@
 "             CCTreeLoadDB                <dbname>
 "             CCTreeAppendDB              <dbname>
 "             CCTreeUnLoadDB             
+"	      CCTreeShowLoadedDBs
 "             CCTreeTraceForward          <symbolname>
 "             CCTreeTraceReverse          <symbolname>     
 "             CCTreeRecurseDepthPlus     
 "             CCTreeRecurseDepthMinus    
 "	      CCTreeWindowSaveCopy
-"
 "
 "          Settings:
 "               Customize behavior by changing the variable settings
@@ -149,6 +149,8 @@
 "                 in incorrectly identified function blocks, etc.
 "
 "  History:
+"           Version 0.85: February 9, 2011
+"                 1. Significant increase in database loading and decompression speeds
 "           Version 0.80: February 4, 2011
 "                 1. Reduce memory usage by removing unused xref symbols
 "           Version 0.75: June 23, 2010
@@ -222,7 +224,7 @@ if !exists('loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
   let loaded_cctree = 1
 else
-   finish 
+  finish 
 endif
 
 " Line continuation used here
@@ -279,7 +281,7 @@ let s:CCTreeKeywordRegEx = '[A-Za-z0-9_\\\.\/]\+'
 let s:currentkeyword = ''
 let s:currentdirection = ''
 let s:dbloaded = 0
-let s:symhashtable = {}
+let s:symnamehash = {}
 let s:save_statusline = ''
 let s:lastbufname = ''
 let s:loadedDBs = []
@@ -301,16 +303,16 @@ function! DBGredir(...)
 endfunction
 
 
-let s:symlistindex = 0
-let s:symlisttable = []
+let s:symuniqid = 0
+let s:symidhash = {}
 
 function! s:CCTreeSymbolListAdd(name)
-    if !has_key(s:symhashtable, a:name)
-        let s:symhashtable[a:name] = s:symlistindex
-        call add(s:symlisttable, s:CCTreeSymbolDictCreate(a:name))
-        let s:symlistindex += 1
+    if !has_key(s:symnamehash, a:name)
+        let s:symnamehash[a:name] = s:symuniqid
+        let s:symidhash[s:symuniqid] = s:CCTreeSymbolDictCreate(a:name)
+        let s:symuniqid += 1
     endif
-    return s:symhashtable[a:name]
+    return s:symnamehash[a:name]
 endfunction
 
 function! s:CCTreeSymbolDictCreate(name)
@@ -323,8 +325,8 @@ function! s:CCTreeSymbolDictCreate(name)
 endfunction
 
 function! s:CCTreeSymbolMarkXRef(funcentryidx, newfuncidx)
-    let s:symlisttable[a:funcentryidx]['c'] .= (a:newfuncidx. ",")
-    let s:symlisttable[a:newfuncidx]['p'] .= (a:funcentryidx. ",")
+    let s:symidhash[a:funcentryidx]['c'] .= (a:newfuncidx. ",")
+    let s:symidhash[a:newfuncidx]['p'] .= (a:funcentryidx. ",")
 endfunction
 
 
@@ -439,12 +441,13 @@ function! s:CCTreeLoadDBExt(db_name, clear)
     let symlocalstart = 0
     let symlocalcount = 0
 
+    try
     " Grab previous status line
     call s:CCTreeInitStatusLine()
     
     call s:CCTreeBusyStatusLineUpdate('Reading database')
     " Check if database was built uncompressed
-   if symbols[0] !~ "cscope.*\-c"
+    if symbols[0] !~ "cscope.*\-c"
         let s:dbcompressed = 1
     else
         let s:dbcompressed = 0
@@ -483,16 +486,24 @@ function! s:CCTreeLoadDBExt(db_name, clear)
     else
         call s:CCTreeBusyStatusLineUpdate('Post processing database (cleanup)')
     endif
-    call s:Digraph_PostProcess(s:symlisttable, s:symhashtable)
+    call s:CCTree_PostProcess_Symbols(s:symidhash, s:symnamehash)
 
-    call s:CCTreeRestoreStatusLine()
+
     let s:dbloaded = 1
-    echomsg "Done loading database. Xref Symbol Count: ".len(s:symhashtable)
+    echomsg s:pluginname.": Done loading database. Xref Symbol Count: ".len(s:symnamehash)
+    
+    catch /^Vim:Interrupt$/	" catch interrupts (CTRL-C)
+	call s:CCTreeRestoreStatusLine()
+        call s:CCTreeWarningMsg(s:pluginname.': Loading aborted.')
+	call s:CCTreeUnloadDB()
+    finally
+    call s:CCTreeRestoreStatusLine()
+    endtry
 endfunction
 
 function! s:CCTreeShowLoadedDBs()
     let i = 1
-    echomsg "CCTree: List of loaded cscope databases"
+    echomsg s:pluginname.": List of loaded cscope databases"
     echomsg "---------------------------------------"
    for aDB in s:loadedDBs
 	echomsg i." ".aDB
@@ -501,15 +512,15 @@ function! s:CCTreeShowLoadedDBs()
 endfunction
 
 function! s:CCTreeUnloadDB()
-    unlet s:symlisttable
-    unlet s:symhashtable
+    unlet s:symidhash
+    unlet s:symnamehash
     unlet s:loadedDBs
 
     let s:dbloaded = 0
 
-    let s:symlisttable = []
-    let s:symhashtable = {}
-    let s:symlistindex = 0
+    let s:symidhash = {}
+    let s:symnamehash = {}
+    let s:symuniqid = 0
 
     let s:loadedDBs = []
     
@@ -518,12 +529,12 @@ function! s:CCTreeUnloadDB()
 endfunction 
 
 function! s:CCTreeGetSymbolXRef(symname, direction)
-    let symentryidx = s:symhashtable[a:symname]
-    let symidslist = split(s:symlisttable[symentryidx][a:direction], ",")
+    let symentryidx = s:symnamehash[a:symname]
+    let symidslist = split(s:symidhash[symentryidx][a:direction], ",")
     let xrefs = {}
 
     for asymid in symidslist
-        let xrefs[s:symlisttable[asymid]['n']] = 1
+        let xrefs[s:symidhash[asymid]['n']] = 1
     endfor
     return xrefs
 endfunction
@@ -533,7 +544,7 @@ function! s:CCTreeGetCallsForSymbol(symname, depth, direction)
         return {}
     endif
 
-    if !has_key(s:symhashtable, a:symname)
+    if !has_key(s:symnamehash, a:symname)
         return {}            
     endif
 
@@ -1029,9 +1040,9 @@ endfunction
 " Command line completion function to return names from the db
 function! s:CCTreeCompleteKwd(arglead, cmdline, cursorpos)
     if a:arglead == ''
-        return keys(s:symhashtable)
+        return keys(s:symnamehash)
     else
-        return filter(keys(s:symhashtable), 'v:val =~? a:arglead')
+        return filter(keys(s:symnamehash), 'v:val =~? a:arglead')
     endif
 endfunction
 
@@ -1081,9 +1092,9 @@ function! s:CCTreeGetKeyword()
     let keyf = expand("<cfile>")
 
     if keyw != keyf 
-        if has_key(s:symhashtable, keyf)
+        if has_key(s:symnamehash, keyf)
             return keyf
-        elseif has_key(s:symhashtable, keyw)
+        elseif has_key(s:symnamehash, keyw)
             return keyw
         endif
     else
@@ -1121,12 +1132,13 @@ let s:dichar1 = " teisaprnl(of)=c"
 let s:dichar2 = " tnerpla"
 
 function! s:Digraph_DictTable_Init ()
-    let dicttable = []
+    let dicttable = {}
     let index = 0
 
     for dc1 in range(strlen(s:dichar1))
         for dc2 in range(strlen(s:dichar2))
-            call add(dicttable, s:dichar1[dc1].s:dichar2[dc2])
+           let dicttable[index] = s:dichar1[dc1].s:dichar2[dc2]
+	   let index += 1
         endfor
     endfor
 
@@ -1165,8 +1177,8 @@ function! s:Digraph_Uncompress_filter_loop(compressedsym, symlist, symhash, cmpd
     return 0
 endfunction
 
-function! s:Digraph_PostProcess (symlist, symhash)
-    call s:CCTreeProgressBarInit(len(a:symhash))
+function! s:CCTree_PostProcess_Symbols (symids, symnames)
+    call s:CCTreeProgressBarInit(len(a:symnames))
 " The encoding needs to be changed to 8-bit, otherwise we can't swap special 
 " 8-bit characters; restore after done
     if s:dbcompressed == 1
@@ -1175,16 +1187,17 @@ function! s:Digraph_PostProcess (symlist, symhash)
 	let compressdict = s:Digraph_DictTable_Init()
     endif
 
-    for asym in keys(a:symhash)
-        let idx = a:symhash[asym]
-	let val = a:symlist[idx]
+    for asym in keys(a:symnames)
+        let idx = a:symnames[asym]
+	let val = a:symids[idx]
 	if val.p == "" && val.c == ""
-		unlet a:symhash[asym]
+		call remove(a:symnames,asym)
+		call remove(a:symids,idx)
         elseif s:dbcompressed == 1
 		let uncmpname = s:Digraph_Uncompress_Fast(asym, compressdict)
-		let a:symhash[uncmpname] = idx
+		let a:symnames[uncmpname] = idx
 		" free the old entry
-		unlet a:symhash[asym]
+		call remove(a:symnames, asym)
 		let val.n = uncmpname
 	endif
         call s:CCTreeProgressBarTick(1)
