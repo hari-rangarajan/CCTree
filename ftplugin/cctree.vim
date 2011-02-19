@@ -139,8 +139,52 @@
 "                    highlight the current call-tree. This option can be
 "                    turned off using the setting, g:CCTreeHilightCallTree.
 "                    For faster highlighting, the value of 'updatetime' can be
-"                    changed
+"                    changed.
 "
+"               Support for large database files:
+"		 Vimscript does not have an API for reading files line-by-line. This
+"		becomes a problem when parsing large databases. CCTree can overcome
+"		the limitation using an external utility (i.e., GNU coreutils: split)
+"		or VimScript's perl interpreter interface (:version must indicate +perl)
+"
+"		The following settings are tailored to suit GNU coreutils split; the default
+"		settings should work with no changes on linux/unix standard installations
+"		(Windows/Mac might require installation of unixutils or equivalent)
+"
+"		External command is setup with the following parameters:
+"	        g:CCTreeSplitProgCmd = 'PROG_SPLIT SPLIT_OPT SPLIT_SIZE IN_FILE OUT_FILE_PREFIX'
+"
+"		Break-down of individual parameters:
+"		The split utility is assumed to be on the path; otherwise, specify full path
+"    			g:CCTreeSplitProg = 'split'
+"
+"		Option for splitting files (-C or -l)
+"    			g:CCTreeSplitProgOption = '-C'
+" 		If split program does not support -C, then this parameter must be set to 
+" 		the number of lines in the split files
+" 			g:CCTreeDbFileSplitLines = -1
+"		Largest filesize Vimscript can handle; file sizes greater than this will
+"		be temporarily split
+"			g:CCTreeDbFileMaxSize  = 40000000 (40 Mbytes)
+"
+"		Sample system command:
+"		Typical:
+"			split -C 40000000 inputFile outputFilePrefix
+"
+"		 When g:CCTreeDbFileSplitLines is set to 10000 (-C options will be ignored)
+"			split -l 10000 inputFile outputFilePrefix
+"			
+"
+"		Using perl interface:
+"			By default, perl usage is disabled. Set
+"			g:CCTreeUsePerl = 1  to enable the perl interface.
+"
+"			Perl interface is typically faster than native Vimscript.
+"			This option can be used independent of the file size
+"	
+"			For more info on setting up perl interface
+"			:help perl-using or :help perl-dynamic
+"		
 "  Limitations:
 "           The accuracy of the call-tree will only be as good as the cscope 
 "           database generation.
@@ -149,10 +193,16 @@
 "                 in incorrectly identified function blocks, etc.
 "
 "  History:
+"	    Version 0.90: February 18, 2011
+"		  1. Support for large databases using external split utility or perl
+"		     interface
+"
 "           Version 0.85: February 9, 2011
 "                 1. Significant increase in database loading and decompression speeds
+"
 "           Version 0.80: February 4, 2011
 "                 1. Reduce memory usage by removing unused xref symbols
+"
 "           Version 0.75: June 23, 2010
 "           	  1. Support for saving CCTree preview window; multiple 
 "			CCTree windows can now be open
@@ -265,6 +315,45 @@ if !exists('CCTreeHilightCallTree')
     let CCTreeHilightCallTree = 1
 endif
 
+if !exists('CCTreeSplitProgCmd')
+    let CCTreeSplitProgCmd = 'PROG_SPLIT SPLIT_OPT SPLIT_SIZE IN_FILE OUT_FILE_PREFIX'
+endif
+
+if !exists('CCTreeSplitProg')
+    "PROG_SPLIT
+    let CCTreeSplitProg = 'split'
+endif
+
+if !exists('CCTreeSplitProgOption')
+    "SPLIT_OPT
+    let CCTreeSplitProgOption = '-C'
+endif
+
+if !exists('CCTreeDbFileSplitLines')
+    " if SPLIT_OPT is -l 
+    " If split program does not support -C, then this parameter must be set to 
+    " the number of lines in the split files
+    let CCTreeDbFileSplitLines = -1
+endif
+
+if !exists('CCTreeDbFileMaxSize')
+    " if SPLIT_OPT is -C 
+    let CCTreeDbFileMaxSize = 40000000 "40 Mbytes
+endif
+
+if !exists('CCTreeUsePerl')
+    " Disabled by default
+    let CCTreeUsePerl = 0
+if 0	" Auto-detect perl interface (Experimental code)
+    if has('perl)
+perl << PERL_EOF
+	VIM::DoCommand("let CCTreeUsePerl = 1");
+PERL_EOF
+    endif
+endif
+endif
+
+
 " Plugin related local variables
 let s:pluginname = 'CCTree'
 let s:windowtitle = 'CCTree-Preview'
@@ -372,7 +461,7 @@ endfunction
 
 function! s:CCTreeProgressBarTick(count)
         let s:progresscurrent += a:count
-        if s:progress1percent < s:progresscurrent
+        if s:progress1percent <= s:progresscurrent
             let s:progresscurrent = 0
             let s:progresspercent += 1
             call s:CCTreeBusyStatusLineExtraInfo("Processing ". s:progresspercent . 
@@ -380,6 +469,9 @@ function! s:CCTreeProgressBarTick(count)
         endif
 endfunction
 
+function! s:CCTreeProgressBarDone()
+        call s:CCTreeBusyStatusLineExtraInfo("")
+endfunction
 
 function! s:CCTreeWarningMsg(msg)
     echohl WarningMsg
@@ -392,7 +484,14 @@ function! s:CCTreePreprocessFilter (val)
     return a:val =~ "^\t[`#$}]|^\k"
 endfunction
 
-
+function! s:CCTreeInputDBName(dbType, dbName)
+    let dbUser = a:dbName
+    if a:dbName == ''
+        let dbUser = input(a:dbType. ' database: ', s:CCTreeDetectDB(), 'file')
+    endif
+    return dbUser
+endfunction
+    
 function! s:CCTreeLoadDB(db_name)
 	call s:CCTreeLoadDBExt(a:db_name, 1)
 endfunction
@@ -401,103 +500,338 @@ function! s:CCTreeAppendDB(db_name)
 	call s:CCTreeLoadDBExt(a:db_name, 0)
 endfunction
 
+function! s:MiscSplitUtilShellCmdPrep(inFile, outFile)
+	let cmdEx = substitute(g:CCTreeSplitProgCmd, "PROG_SPLIT", g:CCTreeSplitProg,"")
+	let cmdEx = substitute(cmdEx, "SPLIT_OPT", g:CCTreeSplitProgOption,"")
+	if g:CCTreeDbFileSplitLines != -1
+		let cmdEx = substitute(cmdEx, "SPLIT_SIZE", g:CCTreeDbFileSplitLines,"")
+	else
+		let cmdEx = substitute(cmdEx, "SPLIT_SIZE", g:CCTreeDbFileMaxSize,"")
+	endif
+	let cmdEx = substitute(cmdEx, "IN_FILE", a:inFile,"")
+	let cmdEx = substitute(cmdEx, "OUT_FILE_PREFIX", a:outFile,"")
+
+	return cmdEx
+endfunction
+
+function! s:VFileCreate(fname)
+	let vfile = {}
+	let vfile.link = a:fname
+	let vfile.size = getfsize(a:fname)
+	let vfile.splitfiles = []
+	let vfile.currentSplitIdx = 0
+	let vfile.totSplits = 0
+	let vfile.lines = []
+	" check for file?
+	return vfile
+endfunction
+
+function! s:VFileOpen(vfile)
+	if s:VFileNeedSplit(a:vfile.link) == 0
+		"little trick to keep interface uniform when we don't split
+		call add(a:vfile.splitfiles, a:vfile.link)
+		let a:vfile.totSplits = 1
+	else
+		let tmpDb = tempname()
+		let cmdEx = s:MiscSplitUtilShellCmdPrep(a:vfile.link, tmpDb)
+
+		let cmdoutput = system(cmdEx)
+		if cmdoutput != ''
+		     " Failed
+		     echomsg "Shell command: ".cmdEx. " failed!"
+		     return -1
+		else
+		     let a:vfile.splitfiles = split(expand(tmpDb."*"), "\n")
+		endif
+		if empty(a:vfile.splitfiles)
+		     return -1
+		endif
+	endif
+	let a:vfile.totSplits = len(a:vfile.splitfiles)
+	return 0
+endfunction
+
+function! s:VFileRead(vfile)
+	if (a:vfile.currentSplitIdx >= len(a:vfile.splitfiles))
+		" out of bounds
+		return -1
+	endif
+	let a:vfile.lines = readfile(a:vfile.splitfiles[a:vfile.currentSplitIdx])
+	let a:vfile.currentSplitIdx += 1
+	return 0
+endfunction
+
+function! s:VFileReset(vfile)
+	let a:vfile.currentSplitIdx = 0
+	let a:vfile.lines = []
+endfunction
+
+function! s:VFileClose(vfile)
+	if a:vfile.totSplits == 1
+	    return 
+	endif
+	for afile in a:vfile.splitfiles
+           call delete(afile)
+	endfor
+endfunction
+
+function! s:CCTreeFilter(lines, filtercmds)
+	let retlst = []
+	let progr = len(a:lines)/100
+	call s:CCTreeProgressBarInit(len(a:lines))
+	while len(a:lines) > 0
+		if progr <= len(a:lines)
+			let tmplist = remove(a:lines, 0, progr)
+		else
+			let tmplist = remove(a:lines, 0, len(a:lines)-1)
+		endif
+		for acmd in a:filtercmds
+			call filter(tmplist, acmd)
+		endfor
+		call s:CCTreeProgressBarTick(progr)
+		call extend(retlst, tmplist)
+	endwhile
+	call s:CCTreeProgressBarDone()
+	return retlst
+endfunction
+
+function! s:CCTreeDetectDB()
+    "if filereadable(g:CCTreeDb)
+    "return g:CCTreeDb
+    "endif
+    if filereadable(g:CCTreeCscopeDb)
+	return g:CCTreeCscopeDb
+    endif
+
+    return ''
+endfunction
+
+function! s:CCTreeValidateDB(dbName)
+    if !filereadable(a:dbName)
+        call s:CCTreeWarningMsg('Database ' . a:dbName . ' not found')
+        return -1
+    endif
+    
+    let dbHeader = readfile(a:dbName, '', 1)
+    
+    if dbHeader[0] =~ "cscope"
+        if dbHeader[0] !~ "cscope.*\-c"
+	    let s:dbcompressed = 1
+	else
+	    let s:dbcompressed = 0
+	endif
+	return 0
+    else
+        call s:CCTreeWarningMsg('Cscope database ' . a:dbName . ' format is not parseable')
+    endif
+    return -1
+endfunction
+
+function! s:CCTreeProcessCscopeDB(vDbFile, filtercmds)
+    let s = s:CCTreeCscopeProcessingStateInit()
+    while 1 == 1
+	if s:VFileRead(a:vDbFile) == -1
+	    break
+	endif
+	let idxstr = '('.a:vDbFile.currentSplitIdx.'/'.a:vDbFile.totSplits.') '
+	call s:CCTreeBusyStatusLineUpdate('Reading database chunk '.idxstr)
+	" Filter-out lines that doesn't have relevant information
+	let plist = s:CCTreeFilter(a:vDbFile.lines, a:filtercmds)
+	call s:CCTreeProgressBarInit(len(plist))
+	call s:CCTreeBusyStatusLineUpdate('Analyzing database chunk '.idxstr)
+	call s:CCTreeProcessCscopeDBList(plist, s)
+	call s:CCTreeProgressBarDone()
+    endwhile
+endfunction
+
+function! s:CCTreeLoadCscopeDB(fname)
+	let vDbFile = s:VFileCreate(a:fname)
+	if s:VFileNeedSplit(a:fname) == 1
+		call s:CCTreeBusyStatusLineUpdate('Cscope DB '
+			\.' >'.g:CCTreeDbFileMaxSize .' bytes. Splitting '.
+			\'into smaller chunks... (this may take some time)')
+	endif
+	try
+		if s:VFileOpen(vDbFile) == 0
+			call s:CCTreeProcessCscopeDB(vDbFile , ['v:val =~ "^\t[#`$}@\~]"'])
+		endif
+	finally
+		call s:VFileClose(vDbFile)
+	endtry
+endfunction
+
+function! s:VFileNeedSplit(fname)
+	if (getfsize(a:fname) > g:CCTreeDbFileMaxSize)
+		return 1
+	endif
+	return 0
+endfunction
+
+
+function! s:CCTreeCscopeProcessingStateInit()
+    let s = {}
+    let s.curfuncidx = -1
+    let s.newfuncidx =  -1
+    let s.curfileidx = -1
+    let s.newfileidx =  -1
+
+    return s
+endfunction
+
+function! s:CCTreeProcessCscopeDBList(symbols, state)
+    for a in a:symbols
+        call s:CCTreeProgressBarTick(1)
+        call s:CCTreeProcessCscopeDBSymbol(a, a:state)
+    endfor
+endfunction
+
+function! s:CCTreeProcessCscopeDBSymbol(symbol, state)
+	return s:CCTreeProcessCscopeDBTaggedSymbol(a:symbol, a:state)
+endfunction
+
+function! s:CCTreeProcessCscopeDBTaggedSymbol(symbol, state)
+        if a:symbol[1] == "`"
+            if a:state.curfuncidx != -1 
+                let newfuncidx = s:CCTreeSymbolListAdd(a:symbol[2:])
+                call s:CCTreeSymbolMarkXRef(a:state.curfuncidx, newfuncidx)
+            endif
+        elseif a:symbol[1] == "$"
+            let a:state.curfuncidx = s:CCTreeSymbolListAdd(a:symbol[2:])
+        elseif a:symbol[1] == "#"
+           call s:CCTreeSymbolListAdd(a:symbol[2:])
+        elseif a:symbol[1] == "}"
+		let a:state.curfuncidx = -1
+        elseif a:symbol[1] == "~"
+            let a:state.newfileidx = s:CCTreeSymbolListAdd(a:symbol[3:])
+            call s:CCTreeSymbolMarkXRef(a:state.curfileidx, a:state.newfileidx)
+        elseif a:symbol[1] == "@"
+	    if a:symbol[2] != ""
+                let a:state.curfileidx = s:CCTreeSymbolListAdd(a:symbol[2:])
+	    endif
+        endif
+endfunction
+
+if has('perl') && g:CCTreeUsePerl == 1
+function! s:CCTreeProcessCscopeDBPerl(fname, fsize)
+    echomsg "entering ".a:fname
+perl << PERL_EOF
+    #use strict;
+    #use warnings FATAL => 'all';
+    #use warnings NONFATAL => 'redefine';
+
+    open (CSCOPEDB, VIM::Eval("a:fname")) or die "File trouble!";
+
+    my $curfuncidx = -1;
+    my $newfuncidx =  -1;
+    my $curfileidx = -1;
+    my $newfileidx =  -1;
+    my $line = "";
+    my $symchar = "";
+    my $symbol = "";
+
+    my $filesize = VIM::Eval("a:fsize");
+    my $file1percent = $filesize/100;
+    my $filebytes = 0;
+    my $fileprogress = 0;
+
+    while (<CSCOPEDB>) {
+	if ($filebytes > $file1percent) {
+	    $filebytes = 0;
+	    $fileprogress += 1;
+            VIM::DoCommand("call s:CCTreeBusyStatusLineExtraInfo(\"[PERL] Processing ". 
+                    \ $fileprogress. "\%, total ". $filesize. " bytes\")");
+        }
+	$filebytes += length($_);
+       
+	$symchar = "";
+	($symchar, $symbol) = /^\t(.)(.*)/;
+	if ($symchar !~ "^[\`\#\$\}\@\~]") {
+		next;	
+	}
+	if ($symchar =~ /\$/) {
+            $curfuncidx = VIM::Eval("s:CCTreeSymbolListAdd('".$symbol."')");
+        } 
+        elsif ($symchar =~ /\`/ && $curfuncidx != -1) {
+	    $newfuncidx = VIM::Eval("s:CCTreeSymbolListAdd('".$symbol."')");
+	    VIM::DoCommand("call s:CCTreeSymbolMarkXRef(".$curfuncidx. "," . $newfuncidx.")");
+        } 
+	elsif ($symchar =~ /\}/) {
+            $curfuncidx = -1;
+        }
+        elsif ($symchar =~ /\#/) {
+            VIM::DoCommand("call s:CCTreeSymbolListAdd('".$symbol."')");
+        }
+    }
+    close(CSCOPEDB);
+PERL_EOF
+endfunction
+endif
+
+function! s:CCTreeStopWatchCreate()
+    let stopWatch = {}
+    let stopWatch.text = "(no reltime feature)"
+    if has('reltime')
+        let stopWatch.startRTime = reltime()
+    endif
+    return stopWatch
+endfunction
+
+
+function! s:CCTreeStopWatchGetElapsed(stopWatch)
+    if has('reltime')
+	let a:stopWatch.text = reltimestr(reltime(a:stopWatch.startRTime))
+    endif
+endfunction
+
+function! s:CCTreeStopWatchGetText(stopWatch)
+	return a:stopWatch.text
+endfunction
 
 function! s:CCTreeLoadDBExt(db_name, clear)
-    let curfuncidx = -1
-    let newfuncidx =  -1
-    let curfileidx = -1
-    let newfileidx =  -1
-
     if a:clear == 1
-    	call s:CCTreeUnloadDB()
+	call s:CCTreeUnloadDB()
     endif
 
-    let cscope_db = a:db_name
-    if cscope_db == ''
-        let cscope_db = input('Cscope database: ', g:CCTreeCscopeDb, 'file')
-        if cscope_db == ''
-            return
-        endif
-    endif
-
-    if !filereadable(cscope_db)
-        call s:CCTreeWarningMsg('Cscope database ' . cscope_db . ' not found')
-        return
-    endif
-	
-    let dbFullPath = getcwd().'/'.cscope_db
-
-    call add(s:loadedDBs, dbFullPath." ".getfsize(dbFullPath)." ".strftime("%c", getftime(dbFullPath)))
-
-    call s:CCTreeBusyStatusLineUpdate('Loading database')
-    let symbols = readfile(cscope_db)
-    if empty(symbols)
-        call s:CCTreeWarningMsg("Failed to read cscope database")
+    let dbUser = s:CCTreeInputDBName('Cscope ', a:db_name)
+    if s:CCTreeValidateDB(dbUser) == -1
         call s:CCTreeRestoreStatusLine()
-        return
+	return
     endif
 
-    let symindex = 0
-    let symlocalstart = 0
-    let symlocalcount = 0
-
+    let lsWatch = s:CCTreeStopWatchCreate()
+    call add(s:loadedDBs, getcwd().'/'.dbUser)
     try
     " Grab previous status line
     call s:CCTreeInitStatusLine()
+    call s:CCTreeBusyStatusLineUpdate('Loading database')
     
-    call s:CCTreeBusyStatusLineUpdate('Reading database')
-    " Check if database was built uncompressed
-    if symbols[0] !~ "cscope.*\-c"
-        let s:dbcompressed = 1
+    if has('perl') && g:CCTreeUsePerl == 1
+        call s:CCTreeProcessCscopeDBPerl(dbUser, getfsize(dbUser))
     else
-        let s:dbcompressed = 0
+	call s:CCTreeLoadCscopeDB(dbUser)
     endif
-    " Filter-out lines that doesn't have relevant information
-    call filter(symbols, 'v:val =~ "^\t[`#$}@\~]"')
-    call s:CCTreeProgressBarInit(len(symbols))
 
-    call s:CCTreeBusyStatusLineUpdate('Analyzing database')
-    for a in symbols
-        call s:CCTreeProgressBarTick(1)
-        
-        if a[1] == "`"
-             if curfuncidx != -1
-                 let newfuncidx = s:CCTreeSymbolListAdd(a[2:])
-                 call s:CCTreeSymbolMarkXRef(curfuncidx, newfuncidx)
-             endif
-        elseif a[1] == "$"
-            let curfuncidx = s:CCTreeSymbolListAdd(a[2:])
-        elseif a[1] == "#"
-            call s:CCTreeSymbolListAdd(a[2:])
-        elseif a[1] == "}"
-            let curfuncidx = -1
-        elseif a[1] == "~"
-            let newfileidx = s:CCTreeSymbolListAdd(a[3:])
-            call s:CCTreeSymbolMarkXRef(curfileidx, newfileidx)
-        elseif a[1] == "@"
-	    if a[2] != ""
-                let curfileidx = s:CCTreeSymbolListAdd(a[2:])
-	    endif
-        endif
-    endfor
-    
     if s:dbcompressed == 1
         call s:CCTreeBusyStatusLineUpdate('Post processing database (decompress/cleanup)')
     else
         call s:CCTreeBusyStatusLineUpdate('Post processing database (cleanup)')
     endif
+
+    call garbagecollect()
     call s:CCTree_PostProcess_Symbols(s:symidhash, s:symnamehash)
 
-
+    call s:CCTreeRestoreStatusLine()
     let s:dbloaded = 1
+ 
+    call s:CCTreeStopWatchGetElapsed(lsWatch)
+
     echomsg s:pluginname.": Done loading database. Xref Symbol Count: ".len(s:symnamehash)
+		\.". Time taken: ".s:CCTreeStopWatchGetText(lsWatch). " secs"
     
     catch /^Vim:Interrupt$/	" catch interrupts (CTRL-C)
 	call s:CCTreeRestoreStatusLine()
         call s:CCTreeWarningMsg(s:pluginname.': Loading aborted.')
 	call s:CCTreeUnloadDB()
-    finally
-    call s:CCTreeRestoreStatusLine()
     endtry
 endfunction
 
@@ -910,7 +1244,6 @@ function! s:CCTreeTraceTreeForSymbol(sym_arg, direction)
         endif
     endif
 
-    let atree = s:CCTreeGetCallsForSymbol(symbol, 0, a:direction)
     call s:CCTreeStoreState(symbol, a:direction)
     call s:CCTreeUpdateForCurrentSymbol()
 endfunction
@@ -1190,7 +1523,7 @@ function! s:CCTree_PostProcess_Symbols (symids, symnames)
     for asym in keys(a:symnames)
         let idx = a:symnames[asym]
 	let val = a:symids[idx]
-	if val.p == "" && val.c == ""
+	if empty(val.p) && empty(val.c)
 		call remove(a:symnames,asym)
 		call remove(a:symids,idx)
         elseif s:dbcompressed == 1
