@@ -16,17 +16,16 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: February 11, 2011
-"      Version: 0.85
+"  Last Change: March 03, 2011
+"      Version: 1.00
 "
 "=============================================================================
 " 
-"  Description:
+"  {{{ Description:
 "       Plugin generates call-trees for any function or macro in real-time inside
 "  Vim.
-"
-"  Requirements: 1) Cscope
-"                2) Vim 7.xx 
+"  }}}
+"  {{{ Requirements: 1) Vim 7.xx , 2) Cscope
 "
 "                Tested on Unix and the following Win32 versions:
 "                + Cscope, mlcscope (WIN32)
@@ -34,8 +33,8 @@
 "                       http://www.bell-labs.com/project/wwexptools/packages.html
 "
 "                
-"
-"  Installation: 
+"  }}}
+"  {{{ Installation: 
 "               Copy this file to ~/.vim/plugins/
 "               or to /vimfiles/plugins/  (on Win32 platforms) 
 " 
@@ -44,8 +43,8 @@
 "
 "               Need to set :filetype plugin on 
 "           
-"
-"  Usage:
+"  }}}
+"  {{{ Usage:
 "           Build cscope database, for example:
 "           > cscope -b -i cscope.files
 "               [Tip: add -c option to build uncompressed databases for faster
@@ -184,15 +183,24 @@
 "	
 "			For more info on setting up perl interface
 "			:help perl-using or :help perl-dynamic
-"		
-"  Limitations:
+"  }}}		
+"  {{{ Limitations:
 "           The accuracy of the call-tree will only be as good as the cscope 
 "           database generation.
 "           NOTE: Different flavors of Cscope have some known
 "                 limitations due to the lexical analysis engine. This results
 "                 in incorrectly identified function blocks, etc.
-"
-"  History:
+"  }}}
+"  {{{ History:
+"           Version 1.00: March 02, 2011
+"                 1. Staging release for upcoming features
+"                    - Complete refactoring of code to take 
+"                           advantage of VimScript's OO features
+"                 2. Faster decompression of symbols
+"                 3. Display related changes
+"                    - Use of unicode symbols for tree
+"                 4. Bugfixes related to multi-database loading
+"                          
 "	    Version 0.90: February 18, 2011
 "		  1. Support for large databases using external split utility or perl
 "		     interface
@@ -259,17 +267,18 @@
 "                    Functions inside macro definitions will be incorrectly
 "                    attributed to the top level calling function
 "
-"
-"   Thanks:
+"   }}}
+"   {{{ Thanks:
 "
 "    Arun Chaganty/Timo Tiefel	    (Ver 0.60 -- bug report)
 "    Michael Wookey                 (Ver 0.4 -- Testing/bug report/patches)
 "    Yegappan Lakshmanan            (Ver 0.2 -- Patches)
 "
 "    The Vim Community, ofcourse :)
-"
 "=============================================================================
+"    }}}
 
+" {{{ Init
 if !exists('loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
   let loaded_cctree = 1
@@ -281,8 +290,12 @@ endif
 let s:cpo_save = &cpoptions
 set cpoptions&vim
 
-" Global variables 
-" Modify in .vimrc to modify default behavior
+" Trick to get the current script ID
+map <SID>xx <SID>xx
+let s:sid = substitute(maparg('<SID>xx'), '<SNR>\(\d\+_\)xx$', '\1', '')
+unmap <SID>xx
+"}}}
+" {{{ Global variables; Modify in .vimrc to modify default behavior
 if !exists('CCTreeCscopeDb')
     let CCTreeCscopeDb = "cscope.out"
 endif
@@ -303,7 +316,7 @@ if !exists('CCTreeWindowWidth')
     let CCTreeWindowWidth = -1
 endif
 if !exists('CCTreeWindowMinWidth')
-    let CCTreeWindowMinWidth = 40
+    let CCTreeWindowMinWidth = 25
 endif
 if !exists('CCTreeWindowHeight')
     let CCTreeWindowHeight = -1
@@ -353,29 +366,15 @@ PERL_EOF
 endif
 endif
 
-
-" Plugin related local variables
+" }}}
+" {{{ Plugin related local variables
 let s:pluginname = 'CCTree'
-let s:windowtitle = 'CCTree-Preview'
+let s:windowtitle = 'CCTree-View'
 let s:windowsavetitle = 'CCTree-View-Copy'
 
-" There could be duplicate keywords on different lines
-let s:CCTreekeyword = ''
-let s:CCTreekeywordLine = -1
 
-" Definition of a keyword...
-let s:CCTreeKeywordRegEx = '[A-Za-z0-9_\\\.\/]\+'
-
-" Other state variables
-let s:currentkeyword = ''
-let s:currentdirection = ''
-let s:dbloaded = 0
-let s:symnamehash = {}
-let s:save_statusline = ''
-let s:lastbufname = ''
-let s:loadedDBs = []
-
-" Turn on/off debugs
+" }}}
+" {{{ Turn on/off debugs
 let s:tag_debug=0
 
 " Use the Decho plugin for debugging
@@ -391,115 +390,83 @@ function! DBGredir(...)
     endif
 endfunction
 
-
-let s:symuniqid = 0
-let s:symidhash = {}
-
-function! s:CCTreeSymbolListAdd(name)
-    if !has_key(s:symnamehash, a:name)
-        let s:symnamehash[a:name] = s:symuniqid
-        let s:symidhash[s:symuniqid] = s:CCTreeSymbolDictCreate(a:name)
-        let s:symuniqid += 1
-    endif
-    return s:symnamehash[a:name]
+function! Pause()
+    call input("sasasD", "asdads")
 endfunction
+" }}}
+" {{{ Progress bar
+let s:ProgressBar = {
+                \ 'progress1current' : 0,
+                \ 'progressmax' : 0,
+                \ 'progress1percent' : 0,
+                \ 'progresspercent' : 0,
+                \ 'units' : ''
+                \}
 
-function! s:CCTreeSymbolDictCreate(name)
-    let retval = {}
-    
-    let retval['n'] = a:name
-    let retval['c'] = ""
-    let retval['p'] = ""
-    return retval
-endfunction
+function! s:ProgressBar.mCreate(maxcount, unit) dict
+        let progressbar = deepcopy(s:ProgressBar)
+        unlet progressbar.mCreate
 
-function! s:CCTreeSymbolMarkXRef(funcentryidx, newfuncidx)
-    let s:symidhash[a:funcentryidx]['c'] .= (a:newfuncidx. ",")
-    let s:symidhash[a:newfuncidx]['p'] .= (a:funcentryidx. ",")
-endfunction
+        let progressbar.progressmax = a:maxcount
+        let progressbar.progress1percent = a:maxcount/100
 
+        let progressbar.units = a:unit
 
-function! s:CCTreeInitStatusLine()
-    let s:symlastprogress = 0
-    let s:symprogress = 0
-    let s:cursym = 0
-    let s:currentstatus = ''
-    let s:statusextra = ''
-    
-    let s:save_statusline = &statusline
-    setlocal statusline=%{CCTreeStatusLine()}
-endfunction
-        
-function! s:CCTreeRestoreStatusLine()
-    let &statusline = s:save_statusline
-endfunction
-
-function! s:CCTreeBusyStatusLineUpdate(msg)
-    let s:currentstatus = a:msg
-    redrawstatus
-endfunction
-
-function! s:CCTreeBusyStatusLineExtraInfo(msg)
-    let s:statusextra = a:msg
-    redrawstatus
-endfunction
-
-function! CCTreeStatusLine()
-    return s:pluginname. " ". s:currentstatus. " -- ". s:statusextra
+        return progressbar
 endfunction
 
 
-let s:progresscurrent = 0
-let s:progressmax = 0
-
-function! s:CCTreeProgressBarInit(maxcount)
-        let s:progressmax = a:maxcount
-        let s:progress1percent = a:maxcount/100
-        let s:progresspercent = 0
-endfunction
-
-
-function! s:CCTreeProgressBarTick(count)
-        let s:progresscurrent += a:count
-        if s:progress1percent <= s:progresscurrent
-            let s:progresscurrent = 0
-            let s:progresspercent += 1
-            call s:CCTreeBusyStatusLineExtraInfo("Processing ". s:progresspercent . 
-                        \ "\%, total ". s:progressmax. " items")
+function! s:ProgressBar.mTick(count) dict
+        let self.progress1current += a:count
+        if self.progress1percent <= self.progress1current
+            let tmp =  (self.progress1current/self.progress1percent)
+            let self.progresspercent += tmp
+            let self.progress1current -= tmp * self.progress1percent
+            call s:StatusLine.mSetExtraInfo("Processing ". self.progresspercent . 
+                        \ "\%, total ". self.progressmax. " ". self.units) 
         endif
 endfunction
 
-function! s:CCTreeProgressBarDone()
-        call s:CCTreeBusyStatusLineExtraInfo("")
+function! s:ProgressBar.mDone()
+        call s:StatusLine.mSetExtraInfo("")
+endfunction
+" }}}
+" {{{ Status line 
+let s:StatusLine = {
+                    \ 'symlastprogress' : 0,
+                    \ 'symprogress' : 0,
+                    \ 'cursym' : 0,
+                    \ 'savedStatusLine' : '',
+                    \ 'statusextra' : '',
+                    \}
+
+
+function! s:StatusLine.mInit() dict
+    let s:StatusLine.savedStatusLine = &l:statusline
+    setlocal statusline=%{CCTreeStatusLine()}
+endfunction
+        
+function! s:StatusLine.mRestore() dict
+    let &statusline = s:StatusLine.savedStatusLine
 endfunction
 
-function! s:CCTreeWarningMsg(msg)
-    echohl WarningMsg
-    echo a:msg
-    echohl None
+function! s:StatusLine.mSetInfo(msg) dict
+    let s:StatusLine.currentstatus = a:msg
+    redrawstatus
 endfunction
 
-function! s:CCTreePreprocessFilter (val)
-    call s:CCTreeProgressBarTick(1)
-    return a:val =~ "^\t[`#$}]|^\k"
+function! s:StatusLine.mSetExtraInfo(msg) dict
+    let s:StatusLine.statusextra = a:msg
+    redrawstatus
 endfunction
 
-function! s:CCTreeInputDBName(dbType, dbName)
-    let dbUser = a:dbName
-    if a:dbName == ''
-        let dbUser = input(a:dbType. ' database: ', s:CCTreeDetectDB(), 'file')
-    endif
-    return dbUser
+function! CCTreeStatusLine() 
+    return   s:pluginname. " ". 
+           \ s:StatusLine.currentstatus . " -- ". 
+           \ s:StatusLine.statusextra
 endfunction
-    
-function! s:CCTreeLoadDB(db_name)
-	call s:CCTreeLoadDBExt(a:db_name, 1)
-endfunction
-
-function! s:CCTreeAppendDB(db_name)
-	call s:CCTreeLoadDBExt(a:db_name, 0)
-endfunction
-
+"}}}
+" {{{ Virtual file interface
 function! s:MiscSplitUtilShellCmdPrep(inFile, outFile)
 	let cmdEx = substitute(g:CCTreeSplitProgCmd, "PROG_SPLIT", g:CCTreeSplitProg,"")
 	let cmdEx = substitute(cmdEx, "SPLIT_OPT", g:CCTreeSplitProgOption,"")
@@ -514,26 +481,42 @@ function! s:MiscSplitUtilShellCmdPrep(inFile, outFile)
 	return cmdEx
 endfunction
 
-function! s:VFileCreate(fname)
-	let vfile = {}
+let s:vFile = {
+	    \ 'splitfiles' : [],
+	    \ 'currentSplitIdx' : 0,
+	    \ 'totSplits' : 0,
+	    \ 'lines' : [],
+            \ 'valid' : 0,
+            \ 'mode' : ""
+            \}
+
+
+function! s:vFile.mIsLargeFile()  dict
+	if (getfsize(self.link) > g:CCTreeDbFileMaxSize)
+		return 1
+	endif
+	return 0
+endfunction
+
+function! s:vFile.mCreate(fname, mode)  dict
+        let vfile =  deepcopy(s:vFile)
+        unlet vfile.mCreate
 	let vfile.link = a:fname
+        let vfile.valid = filereadable(a:fname)
 	let vfile.size = getfsize(a:fname)
-	let vfile.splitfiles = []
-	let vfile.currentSplitIdx = 0
-	let vfile.totSplits = 0
-	let vfile.lines = []
-	" check for file?
+
+        let vfile.mode = a:mode
 	return vfile
 endfunction
 
-function! s:VFileOpen(vfile)
-	if s:VFileNeedSplit(a:vfile.link) == 0
+function! s:vFile.mOpen()  dict
+	if self.mIsLargeFile() == 0
 		"little trick to keep interface uniform when we don't split
-		call add(a:vfile.splitfiles, a:vfile.link)
-		let a:vfile.totSplits = 1
+		call add(self.splitfiles, self.link)
+		let self.totSplits = 1
 	else
 		let tmpDb = tempname()
-		let cmdEx = s:MiscSplitUtilShellCmdPrep(a:vfile.link, tmpDb)
+		let cmdEx = s:MiscSplitUtilShellCmdPrep(self.link, tmpDb)
 
 		let cmdoutput = system(cmdEx)
 		if cmdoutput != ''
@@ -541,361 +524,190 @@ function! s:VFileOpen(vfile)
 		     echomsg "Shell command: ".cmdEx. " failed!"
 		     return -1
 		else
-		     let a:vfile.splitfiles = split(expand(tmpDb."*"), "\n")
+		     let self.splitfiles = split(expand(tmpDb."*"), "\n")
 		endif
-		if empty(a:vfile.splitfiles)
+		if empty(self.splitfiles)
 		     return -1
 		endif
 	endif
-	let a:vfile.totSplits = len(a:vfile.splitfiles)
+	let self.totSplits = len(self.splitfiles)
 	return 0
 endfunction
 
-function! s:VFileRead(vfile)
-	if (a:vfile.currentSplitIdx >= len(a:vfile.splitfiles))
+function! s:vFile.mRawRead(numLines)  dict
+    return readfile(self.link, '', a:numLines)
+endfunction
+
+function! s:vFile.mRead()  dict
+	if (self.currentSplitIdx >= len(self.splitfiles))
 		" out of bounds
 		return -1
 	endif
-	let a:vfile.lines = readfile(a:vfile.splitfiles[a:vfile.currentSplitIdx])
-	let a:vfile.currentSplitIdx += 1
+	let self.lines = readfile(self.splitfiles[self.currentSplitIdx])
+	let self.currentSplitIdx += 1
 	return 0
 endfunction
 
-function! s:VFileReset(vfile)
-	let a:vfile.currentSplitIdx = 0
-	let a:vfile.lines = []
+function! s:vFile.mReset()  dict
+	let self.currentSplitIdx = 0
+	let self.lines = []
 endfunction
 
-function! s:VFileClose(vfile)
-	if a:vfile.totSplits == 1
+function! s:vFile.mClose()  dict
+	if self.totSplits == 1
 	    return 
 	endif
-	for afile in a:vfile.splitfiles
+	for afile in self.splitfiles
            call delete(afile)
 	endfor
 endfunction
+"}}}
+" {{{Stop watch
+let s:StopWatch = {
+			\ 'text' : "(no reltime feature)",
+		  	\}
 
-function! s:CCTreeFilter(lines, filtercmds)
-	let retlst = []
-	let progr = len(a:lines)/100
-	call s:CCTreeProgressBarInit(len(a:lines))
-	while len(a:lines) > 0
-		if progr <= len(a:lines)
-			let tmplist = remove(a:lines, 0, progr)
-		else
-			let tmplist = remove(a:lines, 0, len(a:lines)-1)
-		endif
-		for acmd in a:filtercmds
-			call filter(tmplist, acmd)
-		endfor
-		call s:CCTreeProgressBarTick(progr)
-		call extend(retlst, tmplist)
-	endwhile
-	call s:CCTreeProgressBarDone()
-	return retlst
-endfunction
+function! s:StopWatch.mCreate()	dict
+    let stopWatch = deepcopy(s:StopWatch)
+    unlet stopWatch.mCreate
 
-function! s:CCTreeDetectDB()
-    "if filereadable(g:CCTreeDb)
-    "return g:CCTreeDb
-    "endif
-    if filereadable(g:CCTreeCscopeDb)
-	return g:CCTreeCscopeDb
-    endif
-
-    return ''
-endfunction
-
-function! s:CCTreeValidateDB(dbName)
-    if !filereadable(a:dbName)
-        call s:CCTreeWarningMsg('Database ' . a:dbName . ' not found')
-        return -1
-    endif
-    
-    let dbHeader = readfile(a:dbName, '', 1)
-    
-    if dbHeader[0] =~ "cscope"
-        if dbHeader[0] !~ "cscope.*\-c"
-	    let s:dbcompressed = 1
-	else
-	    let s:dbcompressed = 0
-	endif
-	return 0
-    else
-        call s:CCTreeWarningMsg('Cscope database ' . a:dbName . ' format is not parseable')
-    endif
-    return -1
-endfunction
-
-function! s:CCTreeProcessCscopeDB(vDbFile, filtercmds)
-    let s = s:CCTreeCscopeProcessingStateInit()
-    while 1 == 1
-	if s:VFileRead(a:vDbFile) == -1
-	    break
-	endif
-	let idxstr = '('.a:vDbFile.currentSplitIdx.'/'.a:vDbFile.totSplits.') '
-	call s:CCTreeBusyStatusLineUpdate('Reading database chunk '.idxstr)
-	" Filter-out lines that doesn't have relevant information
-	let plist = s:CCTreeFilter(a:vDbFile.lines, a:filtercmds)
-	call s:CCTreeProgressBarInit(len(plist))
-	call s:CCTreeBusyStatusLineUpdate('Analyzing database chunk '.idxstr)
-	call s:CCTreeProcessCscopeDBList(plist, s)
-	call s:CCTreeProgressBarDone()
-    endwhile
-endfunction
-
-function! s:CCTreeLoadCscopeDB(fname)
-	let vDbFile = s:VFileCreate(a:fname)
-	if s:VFileNeedSplit(a:fname) == 1
-		call s:CCTreeBusyStatusLineUpdate('Cscope DB '
-			\.' >'.g:CCTreeDbFileMaxSize .' bytes. Splitting '.
-			\'into smaller chunks... (this may take some time)')
-	endif
-	try
-		if s:VFileOpen(vDbFile) == 0
-			call s:CCTreeProcessCscopeDB(vDbFile , ['v:val =~ "^\t[#`$}@\~]"'])
-		endif
-	finally
-		call s:VFileClose(vDbFile)
-	endtry
-endfunction
-
-function! s:VFileNeedSplit(fname)
-	if (getfsize(a:fname) > g:CCTreeDbFileMaxSize)
-		return 1
-	endif
-	return 0
-endfunction
-
-
-function! s:CCTreeCscopeProcessingStateInit()
-    let s = {}
-    let s.curfuncidx = -1
-    let s.newfuncidx =  -1
-    let s.curfileidx = -1
-    let s.newfileidx =  -1
-
-    return s
-endfunction
-
-function! s:CCTreeProcessCscopeDBList(symbols, state)
-    for a in a:symbols
-        call s:CCTreeProgressBarTick(1)
-        call s:CCTreeProcessCscopeDBSymbol(a, a:state)
-    endfor
-endfunction
-
-function! s:CCTreeProcessCscopeDBSymbol(symbol, state)
-	return s:CCTreeProcessCscopeDBTaggedSymbol(a:symbol, a:state)
-endfunction
-
-function! s:CCTreeProcessCscopeDBTaggedSymbol(symbol, state)
-        if a:symbol[1] == "`"
-            if a:state.curfuncidx != -1 
-                let newfuncidx = s:CCTreeSymbolListAdd(a:symbol[2:])
-                call s:CCTreeSymbolMarkXRef(a:state.curfuncidx, newfuncidx)
-            endif
-        elseif a:symbol[1] == "$"
-            let a:state.curfuncidx = s:CCTreeSymbolListAdd(a:symbol[2:])
-        elseif a:symbol[1] == "#"
-           call s:CCTreeSymbolListAdd(a:symbol[2:])
-        elseif a:symbol[1] == "}"
-		let a:state.curfuncidx = -1
-        elseif a:symbol[1] == "~"
-            let a:state.newfileidx = s:CCTreeSymbolListAdd(a:symbol[3:])
-            call s:CCTreeSymbolMarkXRef(a:state.curfileidx, a:state.newfileidx)
-        elseif a:symbol[1] == "@"
-	    if a:symbol[2] != ""
-                let a:state.curfileidx = s:CCTreeSymbolListAdd(a:symbol[2:])
-	    endif
-        endif
-endfunction
-
-if has('perl') && g:CCTreeUsePerl == 1
-function! s:CCTreeProcessCscopeDBPerl(fname, fsize)
-    echomsg "entering ".a:fname
-perl << PERL_EOF
-    #use strict;
-    #use warnings FATAL => 'all';
-    #use warnings NONFATAL => 'redefine';
-
-    open (CSCOPEDB, VIM::Eval("a:fname")) or die "File trouble!";
-
-    my $curfuncidx = -1;
-    my $newfuncidx =  -1;
-    my $curfileidx = -1;
-    my $newfileidx =  -1;
-    my $line = "";
-    my $symchar = "";
-    my $symbol = "";
-
-    my $filesize = VIM::Eval("a:fsize");
-    my $file1percent = $filesize/100;
-    my $filebytes = 0;
-    my $fileprogress = 0;
-
-    while (<CSCOPEDB>) {
-	if ($filebytes > $file1percent) {
-	    $filebytes = 0;
-	    $fileprogress += 1;
-            VIM::DoCommand("call s:CCTreeBusyStatusLineExtraInfo(\"[PERL] Processing ". 
-                    \ $fileprogress. "\%, total ". $filesize. " bytes\")");
-        }
-	$filebytes += length($_);
-       
-	$symchar = "";
-	($symchar, $symbol) = /^\t(.)(.*)/;
-	if ($symchar !~ "^[\`\#\$\}\@\~]") {
-		next;	
-	}
-	if ($symchar =~ /\$/) {
-            $curfuncidx = VIM::Eval("s:CCTreeSymbolListAdd('".$symbol."')");
-        } 
-        elsif ($symchar =~ /\`/ && $curfuncidx != -1) {
-	    $newfuncidx = VIM::Eval("s:CCTreeSymbolListAdd('".$symbol."')");
-	    VIM::DoCommand("call s:CCTreeSymbolMarkXRef(".$curfuncidx. "," . $newfuncidx.")");
-        } 
-	elsif ($symchar =~ /\}/) {
-            $curfuncidx = -1;
-        }
-        elsif ($symchar =~ /\#/) {
-            VIM::DoCommand("call s:CCTreeSymbolListAdd('".$symbol."')");
-        }
-    }
-    close(CSCOPEDB);
-PERL_EOF
-endfunction
-endif
-
-function! s:CCTreeStopWatchCreate()
-    let stopWatch = {}
-    let stopWatch.text = "(no reltime feature)"
-    if has('reltime')
-        let stopWatch.startRTime = reltime()
-    endif
+    call stopWatch.mReset()
     return stopWatch
 endfunction
 
-
-function! s:CCTreeStopWatchGetElapsed(stopWatch)
+function! s:StopWatch.mReset()	dict
+    let self.text = "(no reltime feature)"
     if has('reltime')
-	let a:stopWatch.text = reltimestr(reltime(a:stopWatch.startRTime))
+        let self.startRTime = reltime()
     endif
 endfunction
 
-function! s:CCTreeStopWatchGetText(stopWatch)
-	return a:stopWatch.text
+function! s:StopWatch.mSnapElapsed()  dict
+    if has('reltime')
+	let self.text = reltimestr(reltime(self.startRTime))
+    endif
 endfunction
 
-function! s:CCTreeLoadDBExt(db_name, clear)
-    if a:clear == 1
-	call s:CCTreeUnloadDB()
-    endif
+function! s:StopWatch.mGetText()   dict
+	return self.text
+endfunction
+"}}}
+" {{{ Digraph character compression/decompression routines
 
-    let dbUser = s:CCTreeInputDBName('Cscope ', a:db_name)
-    if s:CCTreeValidateDB(dbUser) == -1
-        call s:CCTreeRestoreStatusLine()
-	return
-    endif
+let s:CharMaps = {
+                    \'savedEncoding' : ''
+                    \}
 
-    let lsWatch = s:CCTreeStopWatchCreate()
-    call add(s:loadedDBs, getcwd().'/'.dbUser)
-    try
-    " Grab previous status line
-    call s:CCTreeInitStatusLine()
-    call s:CCTreeBusyStatusLineUpdate('Loading database')
-    
-    if has('perl') && g:CCTreeUsePerl == 1
-        call s:CCTreeProcessCscopeDBPerl(dbUser, getfsize(dbUser))
-    else
-	call s:CCTreeLoadCscopeDB(dbUser)
-    endif
-
-    if s:dbcompressed == 1
-        call s:CCTreeBusyStatusLineUpdate('Post processing database (decompress/cleanup)')
-    else
-        call s:CCTreeBusyStatusLineUpdate('Post processing database (cleanup)')
-    endif
-
-    call garbagecollect()
-    call s:CCTree_PostProcess_Symbols(s:symidhash, s:symnamehash)
-
-    call s:CCTreeRestoreStatusLine()
-    let s:dbloaded = 1
- 
-    call s:CCTreeStopWatchGetElapsed(lsWatch)
-
-    echomsg s:pluginname.": Done loading database. Xref Symbol Count: ".len(s:symnamehash)
-		\.". Time taken: ".s:CCTreeStopWatchGetText(lsWatch). " secs"
-    
-    catch /^Vim:Interrupt$/	" catch interrupts (CTRL-C)
-	call s:CCTreeRestoreStatusLine()
-        call s:CCTreeWarningMsg(s:pluginname.': Loading aborted.')
-	call s:CCTreeUnloadDB()
-    endtry
+" The encoding needs to be changed to 8-bit, otherwise we can't swap special 
+" 8-bit characters; restore after done
+function! s:CharMaps.mInitEncoding() dict
+    	let self.savedEncoding = &encoding
+	let &encoding="latin1"
 endfunction
 
-function! s:CCTreeShowLoadedDBs()
-    let i = 1
-    echomsg s:pluginname.": List of loaded cscope databases"
-    echomsg "---------------------------------------"
-   for aDB in s:loadedDBs
-	echomsg i." ".aDB
-	let i = i + 1
-   endfor
+function! s:CharMaps.mRestoreEncoding() dict
+        let &encoding=self.savedEncoding
 endfunction
 
-function! s:CCTreeUnloadDB()
-    unlet s:symidhash
-    unlet s:symnamehash
-    unlet s:loadedDBs
-
-    let s:dbloaded = 0
-
-    let s:symidhash = {}
-    let s:symnamehash = {}
-    let s:symuniqid = 0
-
-    let s:loadedDBs = []
-    
-    " Force cleanup
-    call garbagecollect()
-endfunction 
-
-function! s:CCTreeGetSymbolXRef(symname, direction)
-    let symentryidx = s:symnamehash[a:symname]
-    let symidslist = split(s:symidhash[symentryidx][a:direction], ",")
-    let xrefs = {}
-
-    for asymid in symidslist
-        let xrefs[s:symidhash[asymid]['n']] = 1
+function! s:CharMaps.CrossProduct(seq1, seq2) dict
+    let cpSeq = []
+    for dc1 in range(strlen(a:seq1))
+        for dc2 in range(strlen(a:seq2))
+           call add(cpSeq, a:seq1[dc1].a:seq2[dc2])
+        endfor
     endfor
-    return xrefs
+    return cpSeq
 endfunction
 
-function! s:CCTreeGetCallsForSymbol(symname, depth, direction)
-    if (a:depth > g:CCTreeRecursiveDepth) 
-        return {}
+let s:TranslateMap = {}
+
+function! s:TranslateMap.mCreate (srcsym, destsym, regex) dict
+    let dicttable = deepcopy(s:TranslateMap)
+    unlet dicttable.mCreate
+
+    let dicttable.mappings = {}
+    
+    if len(a:srcsym) != len (a:destsym)
+	" can't map
+	return -1
     endif
+    
+    let index = 0
+    while (index < len(a:srcsym)) 
+	let dicttable.mappings[a:srcsym[index]] =  a:destsym[index]
+	let index += 1
+    endwhile
+    " Need mapping lens, we assume it's constant across the board
+    let dicttable.mapsrclen = len(a:srcsym[0])
+    let dicttable.regex = a:regex
 
-    if !has_key(s:symnamehash, a:symname)
-        return {}            
-    endif
+    return dicttable
+endfunction
 
-    let calltree_dict = {}
-    let calltree_dict['entry'] = a:symname
 
-    for entry in keys(s:CCTreeGetSymbolXRef(a:symname, a:direction))
-        if !has_key(calltree_dict, 'childlinks')
-            let calltree_dict['childlinks'] = []
+function! s:TranslateMap.mTranslate (value) dict
+    let index = 0
+    let retval = ""
+
+    while index < strlen(a:value)
+	let dichar = strpart(a:value, index, self.mapsrclen)
+	if !empty(dichar) && has_key(self.mappings, dichar)
+		let newmap = self.mappings[dichar]
+                let index += strlen(dichar)-1
+        else 
+                " take only the first character
+		let newmap = dichar[0]
+	endif
+        let retval .= newmap
+	let index += 1
+    endwhile
+    return retval
+endfunction
+
+function! s:TranslateMap.mTranslateFast(value) dict
+    let retval = substitute(a:value, self.regex, '\=self.mappings[submatch(1)]', "g")
+    return retval
+endfunction
+
+
+function! s:CCTreeGetCscopeMaps(maptype)
+	let dichar1 = " teisaprnl(of)=c"	
+	let dichar2 = " tnerpla"
+
+        let ab = map(range(128,255), 'nr2char(v:val)')
+        let ac =  s:CharMaps.CrossProduct(dichar1, dichar2) 
+	if a:maptype == 'Compress'
+		let maps = s:TranslateMap.mCreate(ac, ab, 
+                                \'\(['.dichar1.']['.dichar2.']\)')
+	elseif a:maptype == 'Uncompress'
+		let maps = s:TranslateMap.mCreate(ab, ac,
+                                \'\([\d128-\d255]\)')
+	endif
+        return maps
+endfunction
+" }}}
+" {{{ Unique list filter object
+
+let s:UniqList = {}
+
+function! s:UniqList.mFilterEntries(lstval) dict
+        let valdict = {}
+        for aval in a:lstval
+            let valdict[aval] = ''
+        endfor
+        return join(keys(valdict),",")
+endfunction
+
+let s:CCTreeUniqListFilter = deepcopy(s:UniqList)
+function! s:CCTreeMakeCommaListUnique(clist)
+	let entries = split(a:clist, ",")
+        if len(entries) > 0
+            return s:CCTreeUniqListFilter.mFilterEntries(entries)
         endif
-        let tmpDict = 
-                \s:CCTreeGetCallsForSymbol(entry, a:depth+1, a:direction)
-        call add(calltree_dict['childlinks'], tmpDict)
-    endfor
-    return calltree_dict
+        return ""
 endfunction
-
+" }}}
+" {{{ Buffer/Window
 func! s:FindOpenBuffer(filename)
     let bnrHigh = bufnr("$")
     "tabpagebuflist(tabpagenr())
@@ -921,41 +733,750 @@ func! s:FindOpenWindow(filename)
     " Could not find the buffer
     return 0
 endfunction
+" }}}
+" {{{ Utils library
 
-function! s:CCTreePreviewWindowLeave()
-    call s:FindOpenWindow(s:lastbufname)
+let s:Utils = {}
+
+" Use this function to determine the correct "g" flag
+" for substitution
+function! s:Utils.mGetSearchFlag(gvalue)
+    let ret = (!a:gvalue)* (&gdefault) + (!&gdefault)*(a:gvalue)
+    if ret == 1
+        return 'g'
+    endif
+    return ''
+endfunc
+        
+" Strlen works for multibyte characters
+function! s:Utils.mStrlenEx(val)
+    return strlen(substitute(a:val, ".", "x", "g"))
+endfunc
+" }}}
+
+" {{{ CCTree constants
+let s:CCTreeRC = {
+                    \ 'Error' : -1,
+                    \ 'True' : 1,
+                    \ 'False' : 0,
+                    \ 'Success' : 2
+                    \ }
+"}}}
+" {{{ CCTree DB Obj
+" Symbol definition
+
+let s:CCTreeSym = {
+                    \'n': "",
+                    \'c': "",
+                    \'p': ""
+                    \}
+
+function! s:CCTreeSym.mCreate(name)
+    let sym = deepcopy(s:CCTreeSym)
+    unlet sym.mCreate
+    let sym.n = a:name
+    return sym
+endfunction
+" }}}
+" {{{ XRef Database object
+
+let s:xRefDb = {
+	\ 'symuniqid': 0,
+	\ 'symidhash' : {},
+	\ 'symnamehash' : {}
+        \}
+
+
+function s:xRefDb.mCreate()   dict
+	let dbObj = deepcopy(s:xRefDb)
+        unlet dbObj.mCreate
+
+	return dbObj
 endfunction
 
-function! s:CCTreeMiscConvertDirectionToString(symp)
-    if a:symp == 'p' 
-        let rt = "(Reverse)"
-    else
-        let rt = "(Forward)"
+function s:xRefDb.mDestroy()   dict
+    let self.symidhash = {}
+    let self.symnamehash = {}
+    let self.symuniqid = 0
+endfunction
+
+function! s:xRefDb.mAddSym(name)    dict
+    if !has_key(self.symnamehash, a:name)
+        let self.symnamehash[a:name] = self.symuniqid
+        let self.symidhash[self.symuniqid] = s:CCTreeSym.mCreate(a:name)
+        let self.symuniqid += 1
+    endif
+    return self.symnamehash[a:name]
+endfunction
+
+function! s:xRefDb.mMarkXRefSyms(funcentryidx, newfuncidx) dict
+    let self.symidhash[a:funcentryidx]['c'] .= (",". a:newfuncidx)
+    let self.symidhash[a:newfuncidx]['p'] .= (",". a:funcentryidx)
+endfunction
+
+function! s:xRefDb.mProcessSymbol(symbol, state) dict
+	return self.mProcessTaggedSymbol(a:symbol, a:state)
+endfunction
+
+function! s:xRefDb.mProcessTaggedSymbol(symbol, state) dict
+        if a:symbol[1] == "`"
+            if a:state.curfuncidx != -1 
+                let newfuncidx = self.mAddSym(a:symbol[2:])
+                call self.mMarkXRefSyms(a:state.curfuncidx, newfuncidx)
+            endif
+        elseif a:symbol[1] == "$"
+            let a:state.curfuncidx = self.mAddSym(a:symbol[2:])
+        elseif a:symbol[1] == "#"
+           call self.mAddSym(a:symbol[2:])
+        elseif a:symbol[1] == "}"
+		let a:state.curfuncidx = -1
+        elseif a:symbol[1] == "~"
+            let a:state.newfileidx = self.mAddSym(a:symbol[3:])
+            call self.mMarkXRefSyms(a:state.curfileidx, a:state.newfileidx)
+        elseif a:symbol[1] == "@"
+	    if a:symbol[2] != ""
+                let a:state.curfileidx = self.mAddSym(a:symbol[2:])
+	    endif
+        endif
+endfunction
+
+
+function! s:xRefDb.mGetSymbolXRef(symname, direction) dict
+    let symentryidx = self.symnamehash[a:symname]
+    let symidslist = split(self.symidhash[symentryidx][a:direction], ",")
+    let xrefs = {}
+
+    try
+        for asymid in symidslist
+            let xrefs[self.symidhash[asymid]['n']] = 1
+        endfor
+    catch
+        echomsg 'Failed lookup for '.a:symname. ' key: '.asymid
+    endtry
+    return xrefs
+endfunction
+
+let s:CallTree = {
+                    \ 'symbol' : ""
+                    \ }
+function! s:CallTree.mCreate(name) dict
+    let ct = deepcopy(s:CallTree)
+    unlet ct.mCreate
+
+    let ct.symbol = a:name
+
+    return ct
+endfunction
+
+function! s:CallTree.mAddChildLink(childTree) dict
+    if !has_key(self, 'childlinks')
+        let self.childlinks = []
+    endif
+    call add(self.childlinks, a:childTree)
+endfunction
+
+function! s:xRefDb.mGetCallsForSymbol(symname, curdepth, maxdepth, 
+                                        \ direction) dict
+    if (a:curdepth > a:maxdepth) 
+        return {}
     endif
 
-    return rt
+    if !has_key(self.symnamehash, a:symname)
+        return {}            
+    endif
+
+    let rtree = s:CallTree.mCreate(a:symname)
+
+    for entry in keys(self.mGetSymbolXRef(a:symname, a:direction))
+        let ctree = 
+                \self.mGetCallsForSymbol(entry, a:curdepth+1, a:maxdepth, 
+                                            \a:direction)
+        call rtree.mAddChildLink(ctree)
+    endfor
+    return rtree
 endfunction
 
-function! s:CCTreePreviewStatusLineInit()
-	if exists("b:currentkeyword") == 0
-		let b:currentkeyword = ''
+function! s:xRefDb.mCleanSymbols () dict
+    let pBar = s:ProgressBar.mCreate(len(self.symnamehash), "items")
+    for asym in keys(self.symnamehash)
+        let idx = self.symnamehash[asym]
+	let val = self.symidhash[idx]
+	if empty(val.p) && empty(val.c)
+		call remove(self.symnamehash, asym)
+		call remove(self.symidhash, idx)
+        else
+            let val.p = s:CCTreeMakeCommaListUnique(val.p)
+            let val.c = s:CCTreeMakeCommaListUnique(val.c)
+        endif
+        call pBar.mTick(1)
+    endfor
+    call pBar.mDone()
+endfunction
+
+function! s:xRefDb.mUncompressSymbols () dict
+    call s:CharMaps.mInitEncoding()
+    call self.mTranslateSymbols(s:CCTreeGetCscopeMaps('Uncompress'))
+    call s:CharMaps.mRestoreEncoding()
+endfunction
+
+function! s:xRefDb.mCompressSymbols () dict
+    call s:CharMaps.mInitEncoding()
+    call self.mTranslateSymbols(s:CCTreeGetCscopeMaps('Compress'))
+    let g:ghj = self.symnamehash
+    call s:CharMaps.mRestoreEncoding()
+endfunction
+
+function! s:xRefDb.mTranslateSymbols (map) dict
+    let pBar = s:ProgressBar.mCreate(len(self.symnamehash), "items")
+
+    for asym in keys(self.symnamehash)
+        let idx = self.symnamehash[asym]
+	let val = self.symidhash[idx]
+        let uncmpname = a:map.mTranslateFast(asym)
+        if (asym != uncmpname)
+            "Set up new entry
+            let self.symnamehash[uncmpname] = idx
+            " free the old entry
+            call remove(self.symnamehash, asym)
+            " Set uncompressed name
+            let val.n = uncmpname
+        endif
+        call pBar.mTick(1)
+    endfor
+    call pBar.mDone()
+endfunction
+" }}}
+" {{{ Cscope DB handling
+
+let s:CscopeDbProcessingState = {
+    \'curfuncidx': -1,
+    \'newfuncidx': -1,
+    \'curfileidx': -1,
+    \'newfileidx': -1
+    \ }
+
+function! s:CscopeDbProcessingState.mCreate() dict
+    return deepcopy(s:CscopeDbProcessingState)
+endfunction
+
+let s:CscopeDb = {
+        \ 'fDBName' : '',
+        \ 'compressed' : 0
+        \ }
+
+function! s:CscopeDb.mCreate(fname) dict
+    let csdb = deepcopy(s:CscopeDb)
+    unlet csdb.mCreate
+
+    let csdb.fDBName = a:fname
+    if !filereadable(a:fname) 
+        return s:CCTreeRC.Error
+    endif
+
+    return csdb
+endfunction
+
+function! s:CscopeDb.mProcessFileIntoXRefDb(vDbFile, xrefdb, filtercmds)
+    let csState = s:CscopeDbProcessingState.mCreate()
+    while 1 == 1
+	if a:vDbFile.mRead() == -1
+	    break
 	endif
-	if exists("b:currentdirection") == 0
-		let b:currentdirection = ''
+	let idxstr = '('.a:vDbFile.currentSplitIdx.'/'.a:vDbFile.totSplits.') '
+	call s:StatusLine.mSetInfo('Reading database chunk '.idxstr)
+	" Filter-out lines that doesn't have relevant information
+	let plist = s:CCTreeUtils.mFilter(a:vDbFile.lines, a:filtercmds)
+	let pBar = s:ProgressBar.mCreate(len(plist), "items")
+	call s:StatusLine.mSetInfo('Analyzing database chunk '.idxstr)
+	call self.mProcessListIntoXrefDb(plist, csState, a:xrefdb, pBar)
+	call pBar.mDone()
+    endwhile
+endfunction
+
+function! s:CscopeDb.mProcessListIntoXrefDb(symbols, state, xrefdb, pbar)
+    for a in a:symbols
+        call a:pbar.mTick(1)
+        call a:xrefdb.mProcessSymbol(a, a:state)
+    endfor
+endfunction
+
+function! s:CscopeDb.mParseDbHeader() dict
+    let dbHeader = readfile(self.fDBName,'', 1)
+    
+    if dbHeader[0] =~ "cscope"
+        if (dbHeader[0] !~ "cscope.*\-c")
+            let self.compressed =  s:CCTreeRC.True
+        else
+            let self.compressed =  s:CCTreeRC.False
+        endif
+        return s:CCTreeRC.Success
+    endif
+    return s:CCTreeRC.Error
+endfunction
+
+
+if has('perl') && g:CCTreeUsePerl == 1
+" Perl function
+function! s:CscopeDb.mLoadFileIntoXRefDb(xRefDb)  dict
+    let csState = s:CscopeDbProcessingState.mCreate()
+    call s:StatusLine.mSetInfo('(PERL) Loading database')
+    let pBar = s:ProgressBar.mCreate(getfsize(self.fDBName), "bytes")
+perl << PERL_EOF
+    #use strict;
+    #use warnings FATAL => 'all';
+    #use warnings NONFATAL => 'redefine';
+
+    my $filebytes = 0;
+    my $symchar = '';
+    my $symbol = '';
+ 
+    open (CSCOPEDB, VIM::Eval("self.fDBName")) or die "File trouble!";
+
+    while (<CSCOPEDB>) {
+	$filebytes += length($_);
+        chomp($_);
+
+	$symchar = "";
+	($symchar, $symbol) = /^\t(.)(.*)/;
+	if ($symchar !~ "^[\`\#\$\}\@\~]") {
+		next;	
+	}
+
+        VIM::DoCommand("call pBar.mTick(".$filebytes.")");
+        $filebytes = 0;
+        VIM::DoCommand("call a:xRefDb.mProcessSymbol('".$_."', csState)");
+    }
+    VIM::DoCommand("call pBar.mDone()");
+    close(CSCOPEDB);
+PERL_EOF
+endfunction
+
+else
+
+" Native Vim function
+function! s:CscopeDb.mLoadFileIntoXRefDb(xRefDb) dict
+	let vDbFile = s:vFile.mCreate(self.fDBName, "r")
+        if vDbFile.valid == 0
+            return -1
+        endif
+	if vDbFile.mIsLargeFile() == 1
+		call s:StatusLine.mSetExtraInfo('Cscope DB '
+			\.' >'.g:CCTreeDbFileMaxSize .' bytes. Splitting '.
+			\'into smaller chunks... (this may take some time)')
 	endif
+	try
+		if vDbFile.mOpen() == 0
+			call self.mProcessFileIntoXRefDb(vDbFile,
+                                                \ a:xRefDb,
+                                                \ ['v:val =~ "^\t[#`$}@\~]"'])
+		endif
+	finally
+		call vDbFile.mClose()
+	endtry
 endfunction
 
-function! CCTreePreviewStatusLine()
-    let rtitle= s:windowtitle. ' -- '. b:currentkeyword. 
-            \'[Depth: '. g:CCTreeRecursiveDepth.','
-    let rtitle .= s:CCTreeMiscConvertDirectionToString(b:currentdirection)
+endif
 
-    return rtitle.']'
+" }}}
+" {{{ CCTree helper library
+let s:CCTreeUtils = {}
+
+function! s:CCTreeUtils.mFilter(lines, filtercmds) dict
+	let retlst = []
+	let progr = len(a:lines)/100
+	let pBar = s:ProgressBar.mCreate(len(a:lines), "items")
+	while len(a:lines) > 0
+		if progr <= len(a:lines)
+			let tmplist = remove(a:lines, 0, progr)
+		else
+			let tmplist = remove(a:lines, 0, len(a:lines)-1)
+		endif
+		for acmd in a:filtercmds
+			call filter(tmplist, acmd)
+		endfor
+		call pBar.mTick(progr)
+		call extend(retlst, tmplist)
+	endwhile
+	call pBar.mDone()
+	return retlst
+endfunction
+
+function! s:CCTreeUtils.mWarningMsg(msg) dict
+    echohl WarningMsg
+    echo s:pluginname. ": ". a:msg
+    echohl None
+endfunction
+
+function! s:CCTreeUtils.mInfoMsg(msg) dict
+    echohl Title
+    echo s:pluginname. ": ". a:msg
+    echohl None
+endfunction
+
+function! s:CCTreeUtils.mWrite(msg) dict
+    echo s:pluginname. ": ". a:msg
+endfunction
+
+" }}}
+" {{{  CCTree DB management
+let s:CCTreeDBList = {
+                        \'loadedDBs' : []
+                        \ }
+
+function! s:CCTreeDBList.mCreate() dict
+    let dbList = deepcopy(s:CCTreeDBList)
+    unlet dbList.mCreate
+
+    return dbList
+endfunction
+
+function! s:CCTreeDBList.mShowLoaded() dict
+    let i = 1
+    call s:CCTreeUtils.mWrite(s:pluginname.": List of loaded cscope databases")
+    call s:CCTreeUtils.mWrite("---------------------------------------")
+   for aDB in self.loadedDBs
+	call s:CCTreeUtils.mWrite(i." ".aDB)
+	let i = i + 1
+   endfor
+endfunction
+
+function! s:CCTreeDBList.mClearAll() dict
+    let self.loadedDBs = []
+endfunction
+
+function! s:CCTreeDBList.mIsEmpty() dict
+    if empty(self.loadedDBs) 
+        return s:CCTreeRC.True
+    endif
+    return s:CCTreeRC.False
+endfunction
+
+" Load the cscope db into the global cctree xref db
+function! s:CCTreeDBList.mCreateCscopeDb(dbName) dict
+    if a:dbName == ''
+        let dbUser = s:CCTreeUI.mInputDBName(s:CCTreeUI.mDetectDB())
+    else
+        let dbUser = a:dbName
+    endif
+    "User cancel, do nothing
+     
+    " Create new cscope DB object
+    let csDb = s:CscopeDb.mCreate(dbUser)
+    
+    if type(csDb) != type({})
+        call s:CCTreeUtils.mWarningMsg('Cscope database ' . a:dbName . 
+            \ ' not found.')
+        return s:CCTreeRC.Error
+    endif
+
+    if csDb.mParseDbHeader() == s:CCTreeRC.Error
+        call s:CCTreeUtils.mWarningMsg('Cscope database ' . a:dbName . 
+            \ ' format is not parseable.')
+        return s:CCTreeRC.Error
+    endif
+
+    return csDb
+endfunction
+            
+
+function! s:CCTreeDBList.mAddDbToList(dbName)
+    let dbFullPath = simplify(getcwd().'/'.a:dbName)." ".getfsize(a:dbName).
+                        \ " bytes ".strftime("%c", getftime(a:dbName))
+    call add(self.loadedDBs, dbFullPath)
+endfunction
+
+" Merge the cscope db into the global cctree xref db
+function! s:CCTreeDBList.mMerge(dbName, xRefDb)
+    let csDb = self.mCreateCscopeDb(a:dbName)
+
+    if type(csDb) == type({})
+        " if Db is compressed, then we need to compress our symbols first
+        if self.mLoadCscopeDB(csDb, a:xRefDb, 
+                                \ csDb.compressed) != s:CCTreeRC.Error
+            call self.mAddDbToList(csDb.fDBName)
+        endif
+        " Load will auto decompress the symbols
+    endif
+endfunction
+
+" Load the cscope db into the global cctree xref db
+function! s:CCTreeDBList.mAddNew(dbName, xRefDb)
+    let csDb = self.mCreateCscopeDb(a:dbName)
+    if type(csDb) == type({})
+        if self.mLoadCscopeDB(csDb, a:xRefDb, 
+                            \ s:CCTreeRC.False) != s:CCTreeRC.Error
+            call self.mAddDbToList(csDb.fDBName)
+        endif
+    endif
+endfunction
+
+function! s:CCTreeDBList.mLoadCscopeDB(csDb, xRefDb, precompress)
+    let rc = s:CCTreeRC.Success
+    try
+        let swatch = s:StopWatch.mCreate()
+        call s:StatusLine.mInit()
+        " if compression, then we need to compress our symbols first
+        if a:precompress == s:CCTreeRC.True
+            call s:StatusLine.mSetInfo('Preparing existing symbols')
+            call a:xRefDb.mCompressSymbols()
+        endif
+        call s:StatusLine.mSetInfo('Loading database')
+        call a:csDb.mLoadFileIntoXRefDb(a:xRefDb)   
+        call s:StatusLine.mSetInfo('Database XRef clean-up')
+        call a:xRefDb.mCleanSymbols()
+        if a:csDb.compressed == s:CCTreeRC.True
+            call s:StatusLine.mSetInfo('Decompressing database')
+            call a:xRefDb.mUncompressSymbols()
+        endif
+        call garbagecollect()
+        
+        call swatch.mSnapElapsed()
+
+        let msg = "Done loading database. xRef Symbol Count: "
+                                     \.len(a:xRefDb.symnamehash)
+                                     \.". Time taken: ".swatch.mGetText()." secs"
+        "echomsg s:pluginname.":". msg
+        call s:CCTreeUtils.mInfoMsg(msg)
+
+    catch /^Vim:Interrupt$/	" catch interrupts (CTRL-C)
+        call s:CCTreeUtils.mWarningMsg('Loading aborted.')
+        let rc = s:CCTreeRC.Error
+    finally
+        call s:StatusLine.mRestore()
+    endtry
+    return rc
+endfunction
+"}}}
+" {{{ UI Input related
+let s:CCTreeUI = {}
+
+function! s:CCTreeUI.mDetectDB()
+    "if filereadable(g:CCTreeDb)
+    "return g:CCTreeDb
+    "endif
+    if filereadable(g:CCTreeCscopeDb)
+	return g:CCTreeCscopeDb
+    endif
+
+    return ''
+endfunction
+
+function! s:CCTreeUI.mInputDBName(dbName)
+    let dbUser = a:dbName
+    let dbUser = input('Enter database (cscope): ', a:dbName, 'file')
+    return dbUser
+endfunction
+" }}}
+" {{{ CCTree Markers
+let s:TreeMarkers_UTF8 = {
+                            \ 'splitT' : nr2char(0x251c),
+                            \ 'arrowF' : nr2char(0x25c0),
+                            \ 'arrowR' : nr2char(0x25B6),
+                            \ 'extV' : nr2char(0x2502),
+                            \ 'extH': nr2char(0x2500),
+                            \ 'depth': nr2char(0x25BC)
+                            \}
+
+let s:TreeMarkers_Text = {
+                            \ 'splitT' : '+',
+                            \ 'arrowF' : '>',
+                            \ 'arrowR' : '<',
+                            \ 'extV' : '|',
+                            \ 'extH': '-',
+                            \ 'depth': 'depth:'
+                            \}
+
+let s:CCTreeMarkers = {
+                        \ 'icons':{}
+                        \ }
+function! s:CCTreeMarkers.mCreate() dict
+    let treeMarkers = deepcopy(s:CCTreeMarkers)
+
+    if &encoding == 'utf-8'
+        let treeMarkers.icons = deepcopy(s:TreeMarkers_UTF8)
+    else
+        " default choice
+        let treeMarkers.icons = deepcopy(s:TreeMarkers_Text)
+    endif
+
+    let treeMarkers.icons.arrowSyms = treeMarkers.icons.arrowF . treeMarkers.icons.arrowR
+    let treeMarkers.icons.vertSyms = treeMarkers.icons.splitT . treeMarkers.icons.extV
+
+    return treeMarkers
+endfunction
+
+function! s:CCTreeMarkers.mGetArrow(direction) dict
+    if a:direction == 'p'
+        return self.icons.arrowR
+    elseif a:direction == 'c'
+        return self.icons.arrowF
+    endif
+    return '?'
+endfunction
+" }}}
+" {{{ CCTreeWindow
+let s:CCTreeWindow =  {
+                        \ 'hiKeyword': '',
+                        \ 'hiKeywordLine':'',
+                        \ 'lastbufname':'',
+                        \ 'treeMarkers': s:CCTreeMarkers.mCreate()}
+
+function! s:CCTreeWindow.mCreate() dict
+    let win = deepcopy(s:CCTreeWindow)
+    unlet win.mCreate
+
+    return win
+endfunction
+
+function! s:CCTreeWindow.mLeave()
+    call s:FindOpenWindow(self.lastbufname)
 endfunction
 
 
-function! s:CCTreePreviewWindowEnter()
-    let s:lastbufname = bufname("%")
+" Definition of a keyword...
+let s:CCTreeKeywordRegEx = '[A-Za-z0-9_\\\.\/]\+'
+
+function! s:CCTreeWindow.mGetKeywordAtCursor() dict
+    let curline = line(".")
+    if foldclosed(curline) == -1
+        let curkeyword = matchstr(getline("."), s:CCTreeKeywordRegEx)
+        if curkeyword != ''
+            if curkeyword != self.hiKeyword || curline != self.hiKeywordLine
+                let self.hiKeyword = curkeyword
+                let self.hiKeywordLine = line(".")
+                return s:CCTreeRC.Success
+            endif
+        else
+            return s:CCTreeRC.Error
+        endif 
+    endif  
+    return s:CCTreeRC.Success
+endfunction
+
+function! s:CCTreeWindow.mBuildStatusLine(pState, title, items)
+    let needcomma = 0
+    let rtitle = a:title. ' ('. a:pState.keyword 
+    let rtitle .= '['
+    if has_key(a:items, "depth")
+        let rtitle .= self.treeMarkers.icons.depth
+        let rtitle .= a:pState.depth
+        let needcomma = 1
+    endif
+    if has_key(a:items, "direction")
+        if needcomma == 1
+            let rtitle .= ','
+        endif
+
+        let rtitle .= self.treeMarkers.mGetArrow(a:pState.direction)
+    endif
+    let rtitle .= '])'
+
+    return rtitle
+endfunction
+
+function! CCTreeWindowPreviewStatusLine() 
+    " get global
+    " this is a hack
+    let pState = s:CCTreeGlobals.PreviewState
+    let tMarkers = s:CCTreeGlobals.Window.treeMarkers
+
+    return  s:CCTreeGlobals.Window.mBuildStatusLine(
+                \ s:CCTreeGlobals.PreviewState,
+                \ s:windowtitle,
+                \ {'depth':''}
+                \)
+endfunction
+
+function! s:CCTreeWindow.mPreviewSave(savetitle) dict
+    if s:FindOpenWindow(s:windowtitle) == 1
+        setlocal modifiable
+        call self.mClearMarks()
+        setlocal nomodifiable
+     	setlocal statusline=%-F
+       	silent! exec ":f ". a:savetitle
+        return s:CCTreeRC.Success
+    endif
+    return s:CCTreeRC.Error
+endfunction
+    
+function! s:CCTreeWindow.mIsOpen() dict
+    if s:FindOpenBuffer(s:windowtitle) > 0
+        return s:CCTreeRC.True
+    endif
+    return s:CCTreeRC.False
+endfunction
+
+function! s:CCTreeWindow.mClose() dict
+    if s:FindOpenWindow(s:windowtitle) == 1
+        silent! exec ":q!"
+    endif
+endfunction
+
+function! s:CCTreeWindow.mDisplayToggle() dict
+    if s:FindOpenWindow(s:windowtitle) == 1
+	silent! exec "hide"
+    else 
+	let winbufnr = s:FindOpenBuffer(s:windowtitle)
+	if winbufnr > 0 
+	   call self.mEnter()
+	   silent! exec "buf ".winbufnr
+	   call self.mResize()
+	   silent! exec "wincmd p"
+	else
+	   call s:CCTreeUtils.mWarningMsg(" No active window found.")
+	endif
+    endif
+endfunction
+
+function! s:CCTreeWindow.mResize() dict
+    if g:CCTreeWindowVertical == 1
+        if g:CCTreeWindowWidth == -1
+            exec "vertical resize ". b:maxwindowlen
+        else
+            exec "vertical resize ". g:CCTreeWindowWidth
+        endif
+    else
+        if g:CCTreeWindowHeight != -1
+            let &winminheight = g:CCTreeWindowHeight
+           exec "resize".g:CCTreeWindowHeight
+        endif
+    endif
+endfunction
+
+function! s:CCTreeWindow.mDisplayTree(atree, direction) dict
+    let incctreewin = 1
+    if (bufname('%') != s:windowtitle) 
+    	call self.mEnter()
+        let incctreewin = 0
+    endif
+
+    setlocal modifiable
+    1,$d
+    let b:maxwindowlen = g:CCTreeWindowMinWidth
+    let b:displayTree = s:DisplayTree.mCreate(a:atree,
+                    \ a:direction, self.treeMarkers)
+    call s:CCTreeDisplay.mPopulateTreeInCurrentBuffer(b:displayTree)
+    exec "normal gg"
+
+    " Need to force this again
+    let &l:foldlevel=g:CCTreeMinVisibleDepth
+    setlocal nomodifiable
+    call self.mResize()
+    if (incctreewin == 0)
+        call s:CCTreeWindow.mLeave()
+    endif
+endfunction
+
+function! s:CCTreeWindow.mExtractTreeSymbols(dtree)
+    let symlist = {}
+    for aentry in a:dtree.entries
+        let symlist[aentry.symbol] = 0
+    endfor
+    return symlist
+endfunction
+
+function! s:CCTreeWindow.mEnter() dict
+    let self.lastbufname = bufname("%")
     if s:FindOpenWindow(s:windowtitle) == 0
         if g:CCTreeWindowVertical == 1
             exec  g:CCTreeOrientation." vsplit ". s:windowtitle
@@ -970,151 +1491,54 @@ function! s:CCTreePreviewWindowEnter()
         setlocal noswapfile
         setlocal nonumber
 
-	call s:CCTreePreviewStatusLineInit()
-        setlocal statusline=%=%{CCTreePreviewStatusLine()}
+        setlocal statusline=%=%{CCTreeWindowPreviewStatusLine()}
 
-
-        syntax match CCTreePathMark /\s[|+]/ contained
-        syntax match CCTreeArrow  /-*[<>]/ contained
-        syntax match CCTreeSymbol  / [A-Za-z0-9_\.\\\/]\+/  contained
- 
-        syntax region CCTreeSymbolLine start="^\s" end="$" contains=CCTreeArrow,CCTreePathMark,CCTreeSymbol oneline
-
-        syntax match CCTreeHiArrow  /-*[<>]/ contained
-        syntax match CCTreeHiSymbol  / [A-Za-z0-9_\.\\\/]\+/  contained
-        syntax match CCTreeHiPathMark /\s[|+]/ contained
-        
-        syntax match CCTreeMarkExcl  /^[!#]/ contained
-        syntax match CCTreeMarkTilde /@/  contained
-        syntax region CCTreeUpArrowBlock start="@"  end=/[|+]/  contains=CCTreeMarkTilde contained oneline
-
-        syntax region CCTreeHiSymbolLine start="!" end="$" contains=CCTreeMarkExcl, 
-                \ CCTreeUpArrowBlock,
-                \ CCTreeHiSymbol,CCTreeHiArrow,CCTreeHiPathMark oneline
-
-        syntax region CCTreeMarkedSymbolLine start="#" end="$" contains=CCTreeMarkExcl,
-                        \ CCTreeMarkTilde,CCTreePathMark,
-                        \ CCTreeArrow,CCTreeSymbol,CCTreeUpArrowBlock oneline
-
+        call self.mInitSyntax(self.treeMarkers.icons)
         let cpo_save = &cpoptions
         set cpoptions&vim
 
         call s:CCTreeBufferKeyMappingsCreate() 
 	
-
         nnoremap <buffer> <silent> <C-p>  :CCTreePreviewBufferUsingTag<CR>
         nnoremap <buffer> <silent> <CR>  :CCTreeLoadBufferUsingTag<CR>
         nnoremap <buffer> <silent> <2-LeftMouse> :CCTreeLoadBufferUsingTag<CR>
 
-
         let &cpoptions = cpo_save
     endif
     setlocal foldmethod=expr
-    setlocal foldexpr=s:CCTreeFoldExpr(getline(v:lnum))
+    setlocal foldexpr=CCTreeFoldExpr(getline(v:lnum))
     setlocal foldtext=CCTreeFoldText()
     let &l:foldlevel=g:CCTreeMinVisibleDepth
 endfunction   
-
-
-function! s:CCTreeBuildTreeForLevel(dict, level, treelist, lvllen)
-    if !has_key(a:dict, 'entry')
-        return
-    endif
-
-    if g:CCTreeDisplayMode == 1 
-       let curlevellen = 1
-    elseif g:CCTreeDisplayMode == 2
-       let curlevellen = a:level + 2
-    elseif g:CCTreeDisplayMode == 3
-       let curlevellen = strlen(a:dict['entry']) + a:level + 2
-    endif    
-
-    let a:lvllen[a:level] = min([a:lvllen[a:level], curlevellen])
-
-
-    call add(a:treelist, [a:dict['entry'], a:level])
-    if has_key(a:dict, 'childlinks')
-        for a in a:dict['childlinks']
-            call s:CCTreeBuildTreeForLevel(a, a:level+1, a:treelist, a:lvllen)
-        endfor
-    endif
-endfunction
-
-
-let s:calltreemaxdepth = 10
-function! s:CCTreeBuildTreeDisplayItems(treedict, treesymlist)
-    let treexinfo = repeat([255], s:calltreemaxdepth)
-    call s:CCTreeBuildTreeForLevel(a:treedict, 0, a:treesymlist, treexinfo) 
-    return s:CCTreeBuildDisplayPrependText(treexinfo)
-endfunction
-
-
-function! s:CCTreeBuildDisplayPrependText(lenlist)
-    let pptxt = "  "
-    let treepptext = repeat([" "], s:calltreemaxdepth)
-
-   if s:currentdirection == 'p' 
-        let directiontxt = "< "
-    elseif s:currentdirection == 'c'
-        let directiontxt = "> "
-   endif
-
-   let treepptext[0] = pptxt."+".directiontxt
-
-    for idx in range(1, s:calltreemaxdepth-1)
-        if a:lenlist[idx] != 255
-            let pptxt .= repeat(" ", a:lenlist[idx-1])
-            let treepptext[idx] = pptxt."+"
-
-            if g:CCTreeDisplayMode == 1 
-                let arrows = '-'
-            elseif g:CCTreeDisplayMode >= 2
-                let arrows = repeat("-", idx)
-            endif
-
-            let treepptext[idx] = pptxt."+".arrows.directiontxt
-            let pptxt .= "|"
-        endif
-    endfor
-    return treepptext
-endfunction
-
-function! s:CCTreeDisplayTreeList(pptxtlst, treelst)
-    for aentry in a:treelst
-        call setline(".", a:pptxtlst[aentry[1]]. aentry[0])
-        let b:maxwindowlen = max([strlen(getline("."))+1, b:maxwindowlen])
-        exec "normal o"
-    endfor
-endfunction
-
-
-" Provide dynamic call-tree highlighting using 
+" }}}
+" {{{ Dynamic call-tree highlighting using 
 " syntax highlight tricks 
 "
 " There are 3 types of lines, marked with the start character [\s, !, #]
 " Also @ is used to mark the path that is going up
 
-function! s:CCTreeMarkCallTree(treelst, keyword)
+function! s:CCTreeWindow.mMarkCallTree(treelst, keyword) dict
     let declevel = -1
 
     for idx in range(line("."), 1, -1)
         " Find our keyword
         if declevel == -1  
-            if a:treelst[idx-1][0] == a:keyword
-                let declevel = a:treelst[idx-1][1] 
+            if a:treelst[idx-1].symbol == a:keyword
+                let declevel = a:treelst[idx-1].level
             endif
         endif
 
         " Skip folds
         if declevel != -1 && foldclosed(idx) == -1
             let curline = getline(idx)
-            if declevel == a:treelst[idx-1][1]
+            if declevel == a:treelst[idx-1].level
                 let linemarker = '!'
                 let declevel -= 1
             else
                 let linemarker = '#'
             endif
-            let pos = match(curline, '[+|]', 0, declevel+1)
+            let pos = match(curline, '['.self.treeMarkers.icons.vertSyms.']', 
+                            \ 0, declevel+1)
             " Unconventional change char
             let curline = linemarker.strpart(curline, 1, pos-2).'@'.
                         \ strpart(curline, pos, 1). strpart(curline, pos+1)
@@ -1123,311 +1547,91 @@ function! s:CCTreeMarkCallTree(treelst, keyword)
     endfor
 endfunction
 
-function! s:CCTreePreviewWindowSave()
-    if s:FindOpenWindow(s:windowtitle) == 1
-		silent! exec ":f ". s:windowsavetitle. ":". b:currentkeyword."(".b:currentdirection.")"
-		setlocal statusline=%=%{CCTreePreviewStatusLine()}
-		echomsg s:windowtitle. " window saved"
-    else
-   		echomsg s:windowtitle. " could not be found"
-    endif
-endfunction
-
-function! s:CCTreeDisplayWindowToggle()
-    if s:FindOpenWindow(s:windowtitle) == 1
-	silent! exec "hide"
-    else 
-	let winbufnr = s:FindOpenBuffer(s:windowtitle)
-	if winbufnr > 0 
-	   call s:CCTreePreviewWindowEnter()
-	   silent! exec "buf ".winbufnr
-	   call s:CCTreeWindowResize()
-	   silent! exec "wincmd p"
-	else
-	   echomsg s:windowtitle. " not open."
-	endif
-    endif
-endfunction
-
-function! s:CCTreeWindowResize()
-    if g:CCTreeWindowVertical == 1
-        if g:CCTreeWindowWidth == -1
-            exec "vert resize". b:maxwindowlen
-        else
-            exec "vertical resize". g:CCTreeWindowWidth
-        endif
-    else
-        if g:CCTreeWindowHeight != -1
-            let &winminheight = g:CCTreeWindowHeight
-           exec "resize".g:CCTreeWindowHeight
-        endif
-    endif
-endfunction
-
-
-function! s:CCTreeDisplayTreeInWindow(atree)
-    let incctreewin = 1
-    if (bufname('%') != s:windowtitle) 
-    	call s:CCTreePreviewWindowEnter()
-	call s:CCTreeStoreStateInBuffer(s:currentkeyword, s:currentdirection)
-        let incctreewin = 0
-    endif
-
-    setlocal modifiable
-    1,$d
-    let b:treelist = []
-    let b:maxwindowlen = g:CCTreeWindowMinWidth
-    let treemarkertxtlist = s:CCTreeBuildTreeDisplayItems(a:atree, b:treelist)
-    call s:CCTreeDisplayTreeList(treemarkertxtlist, b:treelist)
-
-    call s:CCTreeWindowResize()
-    exec "normal gg"
-
-    " Need to force this again
-    let &l:foldlevel=g:CCTreeMinVisibleDepth
-    setlocal nomodifiable
-    if (incctreewin == 0)
-        call s:CCTreePreviewWindowLeave()
-    endif
-endfunction
-
-function! s:CCTreeFoldExpr(line)
-    let lvl = b:treelist[v:lnum-1][1]
-    if lvl == 0
-        let lvl = 1
-    endif
-    return '>'.lvl
-endfunction
-
-
-function! CCTreeFoldText()
-    let line = substitute(getline(v:foldstart), '[!@#]', ' ' , 'g')
-    return line. " (+". (v:foldend - v:foldstart). 
-                \  ')'. repeat(" ", winwidth(0))
-endfunction
-
-
-function! s:CCTreeStoreState(symbol, direction)
-    let s:currentkeyword = a:symbol
-    let s:currentdirection = a:direction
-endfunction
-
-function! s:CCTreeStoreStateInBuffer(symbol, direction)
-    let b:currentkeyword = a:symbol
-    let b:currentdirection = a:direction
-endfunction
-
-function! s:CCTreeDBIsLoaded()
-    if s:dbloaded == 0
-        call s:CCTreeWarningMsg('CCTree database not loaded')
-        return 0
-    endif
-    return 1
-endfunction
-
-" Trick to get the current script ID
-map <SID>xx <SID>xx
-let s:sid = substitute(maparg('<SID>xx'), '<SNR>\(\d\+_\)xx$', '\1', '')
-unmap <SID>xx
-
-function! s:CCTreeTraceTreeForSymbol(sym_arg, direction)
-    if s:CCTreeDBIsLoaded() == 0
-        return
-    endif
-
-    let symbol = a:sym_arg
-    if symbol == ''
-        let symbol = input('Trace symbol: ', expand('<cword>'),
-                    \ 'customlist,<SNR>' . s:sid . 'CCTreeCompleteKwd')
-        if symbol == ''
-            return
-        endif
-    endif
-
-    call s:CCTreeStoreState(symbol, a:direction)
-    call s:CCTreeUpdateForCurrentSymbol()
-endfunction
-
-function! s:CCTreeUpdateForCurrentSymbol()
-    if s:currentkeyword != ''
-        let atree = s:CCTreeGetCallsForSymbol(s:currentkeyword, 0, s:currentdirection)
-        call s:CCTreeDisplayTreeInWindow(atree)
-    endif
-endfunction
- 
-
-function! s:CCTreeGetCurrentKeyword()
-    let curline = line(".")
-    if foldclosed(curline) == -1
-        let curkeyword = matchstr(getline("."), s:CCTreeKeywordRegEx)
-        if curkeyword != ''
-            if curkeyword != s:CCTreekeyword || curline != s:CCTreekeywordLine
-                let s:CCTreekeyword = curkeyword
-                let s:CCTreekeywordLine = line(".")
-                return 1
-            endif
-        endif 
-    endif  
-    return -1
-endfunction
-
-function! s:CCTreeLoadBufferFromKeyword()
-    if s:CCTreeGetCurrentKeyword() == -1
-        return
-    endif
-
-    try 
-        exec 'wincmd p'
-    catch
-        call s:CCTreeWarningMsg('No buffer to load file')
-    finally
-        if (cscope_connection() > 0)
-            try 
-                exec "cs find g ".s:CCTreekeyword
-            catch
-                " cheap hack
-                exec "cs find f ".s:CCTreekeyword
-            endtry
-        else
-            try
-                " Ctags is smart enough to figure the path
-                exec "tag ".fnamemodify(s:CCTreekeyword, ":t")
-            catch /^Vim\%((\a\+)\)\=:E426/
-                call s:CCTreeWarningMsg('Tag '. s:CCTreekeyword .' not found')
-                wincmd p
-            endtry
-        endif
-    endtry
-endfunction
-    
-function! s:CCTreePreviewBufferFromKeyword()
-    call s:CCTreeGetCurrentKeyword()
-    if s:CCTreekeyword == ''
-        return
-    endif
-    silent! wincmd P
-    if !&previewwindow 
-        wincmd p
-    endif
-    exec "ptag ".s:CCTreekeyword
-endfunction
-
-
-function! s:CCTreeSanitizeCallDepth()
-    let error = 0
-    if g:CCTreeRecursiveDepth >= s:calltreemaxdepth
-        g:CCTreeRecursiveDepth = s:calltreemaxdepth
-        let error = 1
-    elseif g:CCTreeRecursiveDepth < 1 
-        g:CCTreeRecursiveDepth = 1
-        let error = 1
-    endif
-
-    if error == 1
-        call s:CCTreeWarningMsg('Depth out of bounds')
-    endif
-    return error
-endfunction
-
-function! s:CCTreeRecursiveDepthIncrease()
-    let g:CCTreeRecursiveDepth += 1
-    if s:CCTreeSanitizeCallDepth() == 0
-        call s:CCTreeUpdateForCurrentSymbol()
-    endif
-endfunction
-
-function! s:CCTreeRecursiveDepthDecrease()
-    let g:CCTreeRecursiveDepth -= 1
-    if s:CCTreeSanitizeCallDepth() == 0
-        call s:CCTreeUpdateForCurrentSymbol()
-    endif
-endfunction
-
-
-" Use this function to determine the correct "g" flag
-" for substitution
-function! s:CCTreeGetSearchFlag(gvalue)
-    let ret = (!a:gvalue)* (&gdefault) + (!&gdefault)*(a:gvalue)
-    if ret == 1
-        return 'g'
-    endif
-    return ''
-endfunc
-
-function! s:CCTreeClearMarks()
+function! s:CCTreeWindow.mClearMarks() dict
    let windict = winsaveview()
-   silent! exec "1,$s/[!#@]/ /e".s:CCTreeGetSearchFlag(1)
+   silent! exec "1,$s/[!#@]/ /e".s:Utils.mGetSearchFlag(1)
    call winrestview(windict)
 endfunction
 
-function! s:CCTreeCursorHoldHandle()
-    if g:CCTreeHilightCallTree && s:CCTreeGetCurrentKeyword() != -1 
-       setlocal modifiable
-       call s:CCTreeClearMarks()
-       call s:CCTreeMarkCallTree(b:treelist, s:CCTreekeyword)
-       setlocal nomodifiable
-    endif
+function! s:CCTreeWindow.mInitSyntax(markers) dict
+        "syntax match CCTreePathMark /\s[|+]/ contained
+        exec 'syntax match CCTreePathMark /\s['. a:markers.vertSyms . ']/ contained'
+        "syntax match CCTreeArrow  /-*[<>]/ contained
+        exec 'syntax match CCTreeArrow  /'.a:markers.extH.'*['. a:markers.arrowSyms .']/ contained'
+
+        syntax match CCTreeSymbol  / [A-Za-z0-9_\.\\\/]\+/  contained
+        syntax region CCTreeSymbolLine start="^\s" end="$" contains=CCTreeArrow,CCTreePathMark,CCTreeSymbol oneline
+
+        "syntax match CCTreeHiArrow  /-*[<>]/ contained
+        exec 'syntax match CCTreeHiArrow  /'. a:markers.extH .'*['. a:markers.arrowSyms .']/ contained'
+        syntax match CCTreeHiSymbol  / [A-Za-z0-9_\.\\\/]\+/  contained
+        
+        "syntax match CCTreeHiPathMark /\s[|+]/ contained
+        exec 'syntax match CCTreeHiPathMark /\s[' . a:markers.vertSyms . ']/ contained'
+        
+        syntax match CCTreeMarkExcl  /^[!#]/ contained
+        syntax match CCTreeMarkTilde /@/  contained
+        "syntax region CCTreeUpArrowBlock start="@"  end=/[|+]/  contains=CCTreeMarkTilde contained oneline
+        exec 'syntax region CCTreeUpArrowBlock start="@"  end=/['. a:markers.vertSyms .']/  contains=CCTreeMarkTilde contained oneline'
+
+        syntax region CCTreeHiSymbolLine start="!" end="$" contains=CCTreeMarkExcl, 
+                \ CCTreeUpArrowBlock,
+                \ CCTreeHiSymbol,CCTreeHiArrow,CCTreeHiPathMark oneline
+
+        syntax region CCTreeMarkedSymbolLine start="#" end="$" contains=CCTreeMarkExcl,
+                        \ CCTreeMarkTilde,CCTreePathMark,
+                        \ CCTreeArrow,CCTreeSymbol,CCTreeUpArrowBlock oneline
 endfunction
 
-" CCTreeCompleteKwd
-" Command line completion function to return names from the db
-function! s:CCTreeCompleteKwd(arglead, cmdline, cursorpos)
-    if a:arglead == ''
-        return keys(s:symnamehash)
-    else
-        return filter(keys(s:symnamehash), 'v:val =~? a:arglead')
-    endif
+
+" }}}
+" {{{ CCTreeDisplay
+
+let s:CCTreeDisplay = {}
+
+function! s:CCTreeDisplay.mPopulateTreeInCurrentBuffer(dtree)
+    for aentry in a:dtree.entries
+        let aline = a:dtree.lvlNotationTxt[aentry.level]. aentry.symbol
+        let len = s:Utils.mStrlenEx(aline)
+        "let b:maxwindowlen = max([strlen(aline)+1, b:maxwindowlen])
+        let b:maxwindowlen = max([len+1, b:maxwindowlen])
+        call setline(".", aline)
+        exec "normal o"
+    endfor
 endfunction
 
-augroup CCTreeGeneral
-    au!
-    autocmd CursorHold CCTree-Preview call s:CCTreeCursorHoldHandle()
-augroup END
 
 
+" }}}
+" {{{ CCTree commands
+let s:CCTreeCmd = {}
 
-"Standard display
-highlight link CCTreeSymbol  Function
-highlight link CCTreeMarkers LineNr
-highlight link CCTreeArrow CCTreeMarkers
-highlight link CCTreePathMark CCTreeArrow
-highlight link CCTreeHiPathMark CCTreePathMark
+" Unload current db's and load new one
+" There is no selective unloading
+function! s:CCTreeCmd.mLoadDB(db_name) dict
+        call s:CCTreeGlobals.mUnLoadDBs()
+	call s:CCTreeGlobals.DbList.mAddNew(a:db_name, s:CCTreeGlobals.XRefDb)
+endfunction
 
-" highlighted display
-highlight link CCTreeHiSymbol  TODO
-highlight link CCTreeHiMarkers StatusLine
-highlight link CCTreeHiArrow  CCTreeHiMarkers
-highlight link CCTreeUpArrowBlock CCTreeHiArrow
-
-highlight link CCTreeMarkExcl Ignore
-highlight link CCTreeMarkTilde Ignore
-
-
-" Define commands
-command! -nargs=? -complete=file CCTreeLoadDB  call s:CCTreeLoadDB(<q-args>)
-command! -nargs=? -complete=file CCTreeAppendDB  call s:CCTreeAppendDB(<q-args>)
-command! -nargs=0 CCTreeUnLoadDB               call s:CCTreeUnloadDB()
-command! -nargs=0 CCTreeShowLoadedDBs          call s:CCTreeShowLoadedDBs()
-command! -nargs=? -complete=customlist,s:CCTreeCompleteKwd
-        \ CCTreeTraceForward call s:CCTreeTraceTreeForSymbol(<q-args>, 'c')
-command! -nargs=? -complete=customlist,s:CCTreeCompleteKwd CCTreeTraceReverse  
-            \ call s:CCTreeTraceTreeForSymbol(<q-args>, 'p')
-command! -nargs=0 CCTreeLoadBufferUsingTag call s:CCTreeLoadBufferFromKeyword()
-command! -nargs=0 CCTreePreviewBufferUsingTag call s:CCTreePreviewBufferFromKeyword()
-command! -nargs=0 CCTreeRecurseDepthPlus call s:CCTreeRecursiveDepthIncrease()
-command! -nargs=0 CCTreeRecurseDepthMinus call s:CCTreeRecursiveDepthDecrease()
-command! -nargs=0 CCTreeWindowToggle 	call s:CCTreeDisplayWindowToggle()
-command! -nargs=0 CCTreeWindowSaveCopy call s:CCTreePreviewWindowSave()
+" Merge current db with new one
+function! s:CCTreeCmd.mMergeDB(db_name) dict
+        "call s:CCTreeGlobals.Window.mClose()
+	call s:CCTreeGlobals.DbList.mMerge(a:db_name, s:CCTreeGlobals.XRefDb)
+endfunction
 
 
-function! s:CCTreeGetKeyword()
+" }}}
+" {{{ CCTree Buffer mappings
+function! s:CCTreeWindowGetHiKeyword()
     let keyw = expand("<cword>")
     let keyf = expand("<cfile>")
 
+    let syms = s:CCTreeGlobals.mGetPreviewTreeSymbols()
+
     if keyw != keyf 
-        if has_key(s:symnamehash, keyf)
+        if has_key(syms, keyf)
             return keyf
-        elseif has_key(s:symnamehash, keyw)
+        elseif has_key(syms, keyw)
             return keyw
         endif
     else
@@ -1436,9 +1640,8 @@ function! s:CCTreeGetKeyword()
     return ''
 endfunction
 
-
 function! s:CCTreeBufferKeyMappingsCreate()
-     let func_expr = '<SNR>'.s:sid.'CCTreeGetKeyword()'
+     let func_expr = '<SNR>'.s:sid.'CCTreeWindowGetHiKeyword()'
      exec 'nnoremap <buffer> <silent> <C-\>< :CCTreeTraceReverse <C-R>='.func_expr.'<CR><CR>'
      exec 'nnoremap <buffer> <silent> <C-\>> :CCTreeTraceForward <C-R>='.func_expr.'<CR><CR>'
      exec 'nnoremap <silent> <C-\>y :CCTreeWindowSaveCopy<CR>'
@@ -1458,112 +1661,402 @@ autocmd FileType * if &ft == 'c'|| &ft == 'cpp' |call s:CCTreeBufferKeyMappingsC
 augroup END
 
 
-" Cscope Digraph character compression/decompression routines
-" the logic of these routines are based off the Cscope source code
+" }}}
+" {{{ Tree building
 
-let s:dichar1 = " teisaprnl(of)=c"	
-let s:dichar2 = " tnerpla"
+let s:DisplayTreeEntry = {
+                     \ 'symbol': "",
+                     \ 'level': -1
+                     \ }
 
-function! s:Digraph_DictTable_Init ()
-    let dicttable = {}
-    let index = 0
+function! s:DisplayTreeEntry.mCreate(sym, level) dict
+    let te = deepcopy(s:DisplayTreeEntry)
+    let te.symbol = a:sym
+    let te.level = a:level
+    unlet te.mCreate
 
-    for dc1 in range(strlen(s:dichar1))
-        for dc2 in range(strlen(s:dichar2))
-           let dicttable[index] = s:dichar1[dc1].s:dichar2[dc2]
-	   let index += 1
+    return te
+endfunction
+
+let s:calltreemaxdepth = 10
+let s:DisplayTree = {
+                    \ 'entries': [],
+                    \ 'levelMaxLen': repeat([255], s:calltreemaxdepth),
+                    \ 'lvlNotationTxt': repeat([" "], s:calltreemaxdepth)
+                    \ }
+
+function! s:DisplayTree.mCreate(calltree, direction, markers) dict
+    let dt = deepcopy(s:DisplayTree)
+    call dt.mBuildTreeForLevel(a:calltree, 0)
+    call dt.mBuildNotationalTxt(a:direction, a:markers.icons)
+
+    unlet dt.mBuildTreeForLevel
+    unlet dt.mCreate
+
+    return dt
+endfunction
+
+function! s:DisplayTree.mBuildTreeForLevel(ctree, level)
+    if !has_key(a:ctree, 'symbol')
+        return
+    endif
+    
+    if g:CCTreeDisplayMode == 1 
+       let curlevellen = 1
+    elseif g:CCTreeDisplayMode == 2
+       let curlevellen = a:level + 2
+    elseif g:CCTreeDisplayMode == 3
+       let curlevellen = strlen(a:ctree.symbol) + a:level + 2
+    endif    
+    
+    let self.levelMaxLen[a:level] = min([self.levelMaxLen[a:level],
+                                        \ curlevellen])
+
+    let aentry = s:DisplayTreeEntry.mCreate(a:ctree.symbol, a:level)
+    call add(self.entries, aentry)
+    
+    if has_key(a:ctree, 'childlinks')
+        for alink in a:ctree['childlinks']
+            call self.mBuildTreeForLevel(alink, a:level+1)
         endfor
-    endfor
-
-    return dicttable
-endfunction
-
-function! s:Digraph_Uncompress_Slow (value, dicttable)
-    let retval = ""
-    for idx in range(strlen(a:value))
-        let charext = char2nr(a:value[idx])-128
-        if charext >= 0 
-            let retval .= a:dicttable[charext]
-        else
-            let retval .= a:value[idx]
-        endif
-    endfor
-    return retval
-endfunction
-
-function! s:Digraph_Uncompress_Fast (value, dicttable)
-    let dichar_list = split(a:value, '[^\d128-\d255]\{}')
-    let retval = a:value
-    for adichar in dichar_list
-        let retval = substitute(retval, '\C'.adichar, a:dicttable[char2nr(adichar)-128], "g")
-    endfor
-    return retval
-endfunction
-
-
-function! s:Digraph_Uncompress_filter_loop(compressedsym, symlist, symhash, cmpdict)
-    let idx = a:symhash[a:compressedsym]
-    let uncmpname = s:Digraph_Uncompress_Fast(a:compressedsym, a:cmpdict)
-    let a:symhash[uncmpname] = idx
-    let a:symlist[idx]['n'] = uncmpname
-    call s:CCTreeProgressBarTick(1)
-    return 0
-endfunction
-
-function! s:CCTree_PostProcess_Symbols (symids, symnames)
-    call s:CCTreeProgressBarInit(len(a:symnames))
-" The encoding needs to be changed to 8-bit, otherwise we can't swap special 
-" 8-bit characters; restore after done
-    if s:dbcompressed == 1
-    	let encoding_save=&encoding
-	let &encoding="latin1"
-	let compressdict = s:Digraph_DictTable_Init()
-    endif
-
-    for asym in keys(a:symnames)
-        let idx = a:symnames[asym]
-	let val = a:symids[idx]
-	if empty(val.p) && empty(val.c)
-		call remove(a:symnames,asym)
-		call remove(a:symids,idx)
-        elseif s:dbcompressed == 1
-		let uncmpname = s:Digraph_Uncompress_Fast(asym, compressdict)
-		let a:symnames[uncmpname] = idx
-		" free the old entry
-		call remove(a:symnames, asym)
-		let val.n = uncmpname
-	endif
-        call s:CCTreeProgressBarTick(1)
-    endfor
-    if s:dbcompressed == 1
-        let &encoding=encoding_save
     endif
 endfunction
 
 
-function! s:Digraph_Compress(value, dicttable)
-    let index = 0
-    let retval = ""
+function! s:DisplayTree.mBuildNotationalTxt(direction, markerSyms) dict 
+    let pptxt = "  "
 
-    while index < strlen(a:value)
-        let dc1 = stridx(s:dichar1, a:value[index])
-        if dc1 != -1
-            let dc2 = stridx(s:dichar2, a:value[index+1])
-            if dc2 != -1 
-                let retval .= nr2char(128 + (dc1*8) + dc2)  
-                " skip 2 chars
-                let index += 2
-                continue
+   " REVISIT
+   if a:direction == 'p' 
+        let directiontxt = a:markerSyms.arrowR . " "
+    elseif a:direction == 'c'
+        let directiontxt = a:markerSyms.arrowF . " "
+   endif
+   
+    let self.lvlNotationTxt[0] = pptxt . a:markerSyms.splitT . directiontxt
+
+    for idx in range(1, s:calltreemaxdepth-1)
+        if self.levelMaxLen[idx] != 255
+            let pptxt .= repeat(" ", self.levelMaxLen[idx-1])
+            let self.lvlNotationTxt[idx] = pptxt . a:markerSyms.splitT
+
+            if g:CCTreeDisplayMode == 1 
+                let arrows = a:markerSyms.extH
+            elseif g:CCTreeDisplayMode >= 2
+                let arrows = repeat(a:markerSyms.extH, idx)
             endif
+
+            let self.lvlNotationTxt[idx] = pptxt. a:markerSyms.splitT . arrows . directiontxt
+            let pptxt .= a:markerSyms.extV
         endif
-        let retval .= a:value[index]
-        let index += 1
-    endwhile
-    return retval
+    endfor
 endfunction
 
+"}}}
+" {{{ Preview window Folding
+function! CCTreeFoldExpr(line)
+    if !exists('b:displayTree') || v:lnum > len(b:displayTree.entries)
+        return 0
+    endif
+
+    let lvl = b:displayTree.entries[v:lnum-1].level
+    if lvl == 0
+        let lvl = 1
+    endif
+    return '>'.lvl
+endfunction
+
+
+function! CCTreeFoldText()
+    let line = substitute(getline(v:foldstart), '[!@#]', ' ' , 'g')
+    return line. " (+". (v:foldend - v:foldstart). 
+                \  ')'. repeat(" ", winwidth(0))
+endfunction
+" }}}
+" {{{ Syntax coloring definitions
+"Standard display
+highlight link CCTreeSymbol  Function
+highlight link CCTreeMarkers LineNr
+highlight link CCTreeArrow CCTreeMarkers
+highlight link CCTreePathMark CCTreeArrow
+highlight link CCTreeHiPathMark CCTreePathMark
+
+" highlighted display
+highlight link CCTreeHiSymbol  TODO
+highlight link CCTreeHiMarkers NonText
+highlight link CCTreeHiArrow  CCTreeHiMarkers
+highlight link CCTreeUpArrowBlock CCTreeHiArrow
+
+highlight link CCTreeMarkExcl Ignore
+highlight link CCTreeMarkTilde Ignore
+"}}}
+" {{{  CCTree global state
+
+let s:CCTreePreviewState = {
+                    \ 'keyword':'',
+                    \ 'direction': '',
+                    \ 'depth' : ''
+                    \}
+
+function! s:CCTreePreviewState.mCreate()
+    let state = deepcopy(s:CCTreePreviewState)
+    unlet state.mCreate
+
+    return state
+endfunction
+
+function! s:CCTreePreviewState.mStore(symbol, direction)
+    let self.keyword = a:symbol
+    let self.direction = a:direction
+endfunction
+" }}}
+" {{{ CCTree global objects
+
+let s:CCTreeGlobals = {
+                        \ 'XRefDb': s:xRefDb.mCreate(),
+                        \ 'DbList': s:CCTreeDBList.mCreate(),
+                        \ 'PreviewState': s:CCTreePreviewState.mCreate(),
+                        \ 'Window': s:CCTreeWindow.mCreate()
+                        \}
+
+let g:CCTreeGlobals = s:CCTreeGlobals
+
+function! s:CCTreeGlobals.mGetSymNames() dict
+    return keys(self.XRefDb.symnamehash)
+endfunction
+
+function! s:CCTreeGlobals.mHasSym(name) dict
+    return has_key(self.XRefDb.symnamehash, a:name)
+endfunction
+
+function! s:CCTreeGlobals.mGetCallsForSymbol(name, depth, direction) dict
+    return self.XRefDb.mGetCallsForSymbol(a:name, 
+                      \ a:depth, self.PreviewState.depth, a:direction)
+endfunction
+
+function! s:CCTreeGlobals.mShowLoadedDBs() dict
+    call self.DbList.mShowLoaded()
+endfunction
+
+function! s:CCTreeGlobals.mUnLoadDBs() dict
+    call s:CCTreeGlobals.Window.mClose()
+    call s:CCTreeGlobals.XRefDb.mDestroy()
+    call s:CCTreeGlobals.DbList.mClearAll()
+endfunction
+
+function! s:CCTreeGlobals.mSetPreviewState(name, depth, direction) dict
+    let self.PreviewState.keyword = a:name
+    let self.PreviewState.direction = a:direction
+    let self.PreviewState.depth = a:depth
+endfunction
+
+function! s:CCTreeGlobals.mUpdateForCurrentSymbol() dict
+    if self.DbList.mIsEmpty() == s:CCTreeRC.True
+        return s:CCTreeRC.Error
+    endif
+    if self.PreviewState.keyword != ''
+    " Move this function to globals? 
+        let atree = self.mGetCallsForSymbol(self.PreviewState.keyword, 
+                        \ 0, 
+                        \ self.PreviewState.direction)
+        call self.Window.mDisplayTree(atree, self.PreviewState.direction)
+    endif
+endfunction
+
+
+function! s:CCTreeGlobals.mGetPreviewTreeSymbols()
+        " REVIST
+        if exists('b:displayTree')
+            return self.Window.mExtractTreeSymbols(b:displayTree)
+        end
+        return {}
+endfunction
+
+function! s:CCTreeGlobals.mSanitizeCallDepth() dict
+    let error = 0
+    if self.PreviewState.depth >= s:calltreemaxdepth
+        self.PreviewState.depth = s:calltreemaxdepth
+        let error = 1
+    elseif self.PreviewState.depth < 1 
+        let self.PreviewState.depth = 1
+        let error = 1
+    endif
+
+    if error == 1
+        call s:CCTreeUtils.mWarningMsg('Depth out of bounds')
+    endif
+    return error
+endfunction
+
+function! s:CCTreeGlobals.mRecursiveDepthIncrease() dict
+    let self.PreviewState.depth += 1
+    if self.mSanitizeCallDepth() == 0
+        call self.mUpdateForCurrentSymbol()
+    endif
+endfunction
+
+function! s:CCTreeGlobals.mRecursiveDepthDecrease() dict
+    let self.PreviewState.depth -= 1
+    if self.mSanitizeCallDepth() == 0
+        call self.mUpdateForCurrentSymbol()
+    endif
+endfunction
+
+function! s:CCTreeGlobals.mDisplayToggle() dict
+    call self.Window.mDisplayToggle()
+endfunction
+
+function! s:CCTreeGlobals.mPreviewSave() dict
+    let rtitle = s:CCTreeGlobals.Window.mBuildStatusLine(
+                \ s:CCTreeGlobals.PreviewState,
+                \ s:windowsavetitle,
+                \ {'depth':'', 'direction':''}
+                \)
+
+    if self.Window.mPreviewSave(rtitle) == s:CCTreeRC.Success
+        call s:CCTreeUtils.mInfoMsg('Window saved as '. rtitle .
+                    \ '. New window will be opened on next usage.')
+    else
+        call s:CCTreeUtils.mWarningMsg('No active window found to be saved.')
+    endif
+endfunction
+
+function! s:CCTreeGlobals.mCursorHoldHandleEvent() dict
+    if g:CCTreeHilightCallTree && self.Window.mGetKeywordAtCursor() != s:CCTreeRC.Error
+       setlocal modifiable
+       call self.Window.mClearMarks()
+       call self.Window.mMarkCallTree(b:displayTree.entries,
+                            \ self.Window.hiKeyword)
+       setlocal nomodifiable
+    endif
+endfunction
+
+function! s:CCTreeGlobals.mEncodingChangedHandleEvent() dict
+    let self.Window.treeMarkers = s:CCTreeMarkers.mCreate()
+    if s:CCTreeGlobals.Window.mIsOpen() == s:CCTreeRC.True
+        call s:CCTreeGlobals.mUpdateForCurrentSymbol()
+    endif
+endfunction
+
+augroup CCTreeGeneral
+    au!
+    "autocmd CursorHold CCTree-Preview call s:CCTreeGlobals.mCursorHoldHandleEvent()
+    exec 'autocmd CursorMoved '.s:windowtitle.' call s:CCTreeGlobals.mCursorHoldHandleEvent()'
+    autocmd EncodingChanged * call s:CCTreeGlobals.mEncodingChangedHandleEvent()
+augroup END
+
+" }}}
+" {{{ Vim tags interface
+
+" CCTreeCompleteKwd
+" Command line completion function to return names from the db
+function! s:CCTreeCompleteKwd(arglead, cmdline, cursorpos) 
+    let syms = s:CCTreeGlobals.mGetSymNames()
+    if a:arglead == ''
+        return syms
+    else
+        return filter(syms, 'v:val =~? a:arglead')
+    endif
+endfunction
+
+function! s:CCTreeTraceTreeForSymbol(sym_arg, direction) 
+    if s:CCTreeGlobals.DbList.mIsEmpty() == s:CCTreeRC.True
+        call s:CCTreeUtils.mWarningMsg('No database loaded')
+        return
+    endif
+
+    let symbol = a:sym_arg
+    if symbol == ''
+        let symbol = input('Trace symbol: ', expand('<cword>'),
+                    \ 'customlist,<SNR>' . s:sid . 'CCTreeCompleteKwd')
+        if symbol == ''
+            return
+        endif
+    endif
+
+    call s:CCTreeGlobals.mSetPreviewState(symbol,
+                                        \ g:CCTreeRecursiveDepth,
+                                        \ a:direction)
+
+    call s:CCTreeGlobals.mUpdateForCurrentSymbol()
+endfunction
+
+
+
+ 
+function! s:CCTreeGlobals.mLoadBufferFromKeyword()
+    " REVISIT
+    if s:CCTreeGlobals.Window.mGetKeywordAtCursor() == s:CCTreeRC.Error
+        call s:CCTreeUtils.mWarningMsg('No keyword at cursor')
+        return
+    endif
+
+    let hiKeyword = s:CCTreeGlobals.Window.hiKeyword
+    try 
+        exec 'wincmd p'
+    catch
+        call s:CCTreeUtils.mWarningMsg('No buffer to load file')
+    finally
+        if (cscope_connection() > 0)
+            try 
+                exec "cs find g ". hiKeyword
+            catch
+                " cheap hack
+                exec "cs find f ". hiKeyword
+            endtry
+        else
+            try
+                " Ctags is smart enough to figure the path
+                exec "tag ".fnamemodify(hiKeyword, ":t")
+            catch /^Vim\%((\a\+)\)\=:E426/
+                call s:CCTreeUtils.mWarningMsg('Tag '. hiKeyword .' not found')
+                wincmd p
+            endtry
+        endif
+    endtry
+endfunction
+    
+function! s:CCTreeGlobals.mPreviewBufferFromKeyword() 
+    if self.Window.mGetKeywordAtCursor() == s:CCTreeRC.Error
+        call s:CCTreeUtils.mWarningMsg('No keyword found')
+        return
+    endif
+
+    let hiKeyword = s:CCTreeGlobals.Window.hiKeyword
+    silent! wincmd P
+    if !&previewwindow 
+        wincmd p
+    endif
+    try
+        exec "ptag ". hiKeyword
+    catch
+        call s:CCTreeUtils.mWarningMsg('Tag '.hiKeyword. ' not found')
+    endtry
+endfunction
+
+" }}}
+" {{{ Define commands
+command! -nargs=? -complete=file CCTreeLoadDB  call s:CCTreeCmd.mLoadDB(<q-args>)
+command! -nargs=? -complete=file CCTreeAppendDB  call s:CCTreeCmd.mMergeDB(<q-args>)
+command! -nargs=0 CCTreeUnLoadDB               call s:CCTreeGlobals.mUnLoadDBs()
+command! -nargs=0 CCTreeShowLoadedDBs          call s:CCTreeGlobals.mShowLoadedDBs()
+command! -nargs=? -complete=customlist,s:CCTreeCompleteKwd
+        \ CCTreeTraceForward call s:CCTreeTraceTreeForSymbol(<q-args>, 'c')
+command! -nargs=? -complete=customlist,s:CCTreeCompleteKwd CCTreeTraceReverse  
+            \ call s:CCTreeTraceTreeForSymbol(<q-args>, 'p')
+command! -nargs=0 CCTreeLoadBufferUsingTag call s:CCTreeGlobals.mLoadBufferFromKeyword()
+command! -nargs=0 CCTreePreviewBufferUsingTag call s:CCTreeGlobals.mPreviewBufferFromKeyword()
+command! -nargs=0 CCTreeRecurseDepthPlus call s:CCTreeGlobals.mRecursiveDepthIncrease()
+command! -nargs=0 CCTreeRecurseDepthMinus call s:CCTreeGlobals.mRecursiveDepthDecrease()
+" Preview Window
+command! -nargs=0 CCTreeWindowToggle 	call s:CCTreeGlobals.mDisplayToggle()
+command! -nargs=0 CCTreeWindowSaveCopy call s:CCTreeGlobals.mPreviewSave()
+"}}}
+" {{{ finish
 
 " restore 'cpo'
 let &cpoptions = s:cpo_save
 unlet s:cpo_save
+" vim: ts=8 sw=4 sts=4 et foldenable foldmethod=marker foldcolumn=1
+" }}}
 
