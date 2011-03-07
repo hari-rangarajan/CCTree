@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: March 03, 2011
-"      Version: 1.00
+"  Last Change: March 06, 2011
+"      Version: 1.04
 "
 "=============================================================================
 " 
@@ -83,6 +83,25 @@
 "             Preview symbol in other window    <Ctrl-P>
 "
 "	      Save copy of preview window       <C-\>y
+"             Highlight current call-tree flow  <C-l>
+"             Compress(Fold) call tree view     zs
+"             (This is useful for viewing long
+"              call trees which span across
+"              multiple pages)
+"
+"           Custom user-mappings:
+"           Users can custom-map the short-cut keys by 
+"           overriding the following variables in their
+"           Vim start-up configuration            
+"
+"            g:CCTreeKeyTraceForwardTree = '<C-\>>' 
+"            g:CCTreeKeyTraceReverseTree = '<C-\><' 
+"            g:CCTreeKeyHilightTree = '<C-l>'        " Static highlighting
+"            g:CCTreeKeySaveWindow = '<C-\>y' 
+"            g:CCTreeKeyToggleWindow = '<C-\>w' 
+"            g:CCTreeKeyCompressTree = 'zs'     " Compress call-tree 
+"            g:CCTreeKeyDepthPlus = '<C-\>=' 
+"            g:CCTreeKeyDepthMinus = '<C-\>-'
 "
 "          Command List:
 "             CCTreeLoadDB                <dbname>
@@ -95,8 +114,31 @@
 "             CCTreeRecurseDepthMinus    
 "	      CCTreeWindowSaveCopy
 "
+"          Only in preview window:
+"             CCTreeWindowHiCallTree   (same as <C-l> shorcut)
+"                   Highlight calling tree for keyword at cursor
+"
+"          Dynamic configuration:
+"             CCTreeOptsEnable <option>    (<tab> for auto-complete)
+"             CCTreeOptsDisable <option>   (<tab> for auto-complete)
+"             Options:
+"                   DynamicTreeHiLights: Control dynamic tree highlighting
+"                   UseUnicodeSymbols: Use of UTF-8 special characters for
+"                                      tree
+"           
+"                
+"
 "          Settings:
 "               Customize behavior by changing the variable settings
+"
+"               UTF-8 usage:
+"                   UTF-8 symbols should work fine on the majority of
+"               X11 systems; however, some terminals might cause problems.
+"
+"               To use symbols for drawing the tree, this option can be enabled.
+"                   g:CCTreeUseUTF8Symbols = 1 
+"               The options interface (CCTreeOptsxxx) can be used to 
+"               modify options on-the-fly.
 "
 "               Cscope database file, g:CCTreeCscopeDb = "cscope.out"
 "               Maximum call levels,   g:CCTreeRecursiveDepth = 3
@@ -183,6 +225,7 @@
 "	
 "			For more info on setting up perl interface
 "			:help perl-using or :help perl-dynamic
+"
 "  }}}		
 "  {{{ Limitations:
 "           The accuracy of the call-tree will only be as good as the cscope 
@@ -192,6 +235,8 @@
 "                 in incorrectly identified function blocks, etc.
 "  }}}
 "  {{{ History:
+"           Version 1.01: March 04, 2011
+"                 1. Make UTF-8 symbols for tree optional
 "           Version 1.00: March 02, 2011
 "                 1. Staging release for upcoming features
 "                    - Complete refactoring of code to take 
@@ -270,6 +315,7 @@
 "   }}}
 "   {{{ Thanks:
 "
+"    Frank Chang                    (ver 1.04 -- testing/UI enhancement ideas)
 "    Arun Chaganty/Timo Tiefel	    (Ver 0.60 -- bug report)
 "    Michael Wookey                 (Ver 0.4 -- Testing/bug report/patches)
 "    Yegappan Lakshmanan            (Ver 0.2 -- Patches)
@@ -296,6 +342,7 @@ let s:sid = substitute(maparg('<SID>xx'), '<SNR>\(\d\+_\)xx$', '\1', '')
 unmap <SID>xx
 "}}}
 " {{{ Global variables; Modify in .vimrc to modify default behavior
+" {{{General
 if !exists('CCTreeCscopeDb')
     let CCTreeCscopeDb = "cscope.out"
 endif
@@ -305,6 +352,34 @@ endif
 if !exists('CCTreeMinVisibleDepth')
     let CCTreeMinVisibleDepth = 3
 endif
+" }}}
+" {{{ Custom user-key mappings
+if !exists('CCTreeKeyTraceForwardTree')
+    let g:CCTreeKeyTraceForwardTree = '<C-\>>' 
+endif
+if !exists('CCTreeKeyTraceReverseTree')
+    let g:CCTreeKeyTraceReverseTree = '<C-\><' 
+endif
+if !exists('CCTreeKeyHilightTree')
+    let g:CCTreeKeyHilightTree = '<C-l>'        " Static highlighting
+endif
+if !exists('CCTreeKeySaveWindow ')
+    let g:CCTreeKeySaveWindow = '<C-\>y' 
+endif
+if !exists('CCTreeKeyToggleWindow ')
+    let g:CCTreeKeyToggleWindow = '<C-\>w' 
+endif
+if !exists('CCTreeKeyCompressTree ')
+    let g:CCTreeKeyCompressTree = 'zs'     " Compress call-tree 
+endif
+if !exists('CCTreeKeyDepthPlus')
+    let g:CCTreeKeyDepthPlus = '<C-\>='     
+endif
+if !exists('CCTreeKeyDepthMinus')
+    let g:CCTreeKeyDepthMinus = '<C-\>-'    
+endif
+" }}}
+" {{{ CCTree UI settings
 if !exists('CCTreeOrientation')
     let CCTreeOrientation = "topleft"
 endif
@@ -327,7 +402,8 @@ endif
 if !exists('CCTreeHilightCallTree')
     let CCTreeHilightCallTree = 1
 endif
-
+" }}}
+" {{{ Split prog
 if !exists('CCTreeSplitProgCmd')
     let CCTreeSplitProgCmd = 'PROG_SPLIT SPLIT_OPT SPLIT_SIZE IN_FILE OUT_FILE_PREFIX'
 endif
@@ -354,6 +430,8 @@ if !exists('CCTreeDbFileMaxSize')
     let CCTreeDbFileMaxSize = 40000000 "40 Mbytes
 endif
 
+" }}}
+" {{{ Misc (perl)
 if !exists('CCTreeUsePerl')
     " Disabled by default
     let CCTreeUsePerl = 0
@@ -365,13 +443,15 @@ PERL_EOF
     endif
 endif
 endif
-
+if !exists('CCTreeUseUTF8Symbols')
+    let CCTreeUseUTF8Symbols = 0
+endif
+" }}}
 " }}}
 " {{{ Plugin related local variables
 let s:pluginname = 'CCTree'
 let s:windowtitle = 'CCTree-View'
 let s:windowsavetitle = 'CCTree-View-Copy'
-
 
 " }}}
 " {{{ Turn on/off debugs
@@ -390,9 +470,6 @@ function! DBGredir(...)
     endif
 endfunction
 
-function! Pause()
-    call input("sasasD", "asdads")
-endfunction
 " }}}
 " {{{ Progress bar
 let s:ProgressBar = {
@@ -447,7 +524,7 @@ function! s:StatusLine.mInit() dict
 endfunction
         
 function! s:StatusLine.mRestore() dict
-    let &statusline = s:StatusLine.savedStatusLine
+    let &l:statusline = s:StatusLine.savedStatusLine
 endfunction
 
 function! s:StatusLine.mSetInfo(msg) dict
@@ -1292,7 +1369,7 @@ let s:CCTreeMarkers = {
 function! s:CCTreeMarkers.mCreate() dict
     let treeMarkers = deepcopy(s:CCTreeMarkers)
 
-    if &encoding == 'utf-8'
+    if &encoding == 'utf-8' && g:CCTreeUseUTF8Symbols == 1
         let treeMarkers.icons = deepcopy(s:TreeMarkers_UTF8)
     else
         " default choice
@@ -1313,6 +1390,18 @@ function! s:CCTreeMarkers.mGetArrow(direction) dict
     endif
     return '?'
 endfunction
+" }}}
+" {{{ User key mappings 
+let s:CCTreeKeyMappings = {
+                    \ 'CTreeF': g:CCTreeKeyTraceForwardTree,
+                    \ 'CTreeR': g:CCTreeKeyTraceReverseTree,
+                    \ 'CTreeHilight': g:CCTreeKeyHilightTree,
+                    \ 'CTreeWSave': g:CCTreeKeySaveWindow,
+                    \ 'CTreeWToggle': g:CCTreeKeyToggleWindow,
+                    \ 'CTreeCompress': g:CCTreeKeyCompressTree,
+                    \ 'CTreeDepthMinus': g:CCTreeKeyDepthMinus,
+                    \ 'CTreeDepthPlus': g:CCTreeKeyDepthPlus
+                    \}
 " }}}
 " {{{ CCTreeWindow
 let s:CCTreeWindow =  {
@@ -1350,6 +1439,9 @@ function! s:CCTreeWindow.mGetKeywordAtCursor() dict
             return s:CCTreeRC.Error
         endif 
     endif  
+    if self.hiKeyword == ''
+        return s:CCTreeRC.Error
+    endif
     return s:CCTreeRC.Success
 endfunction
 
@@ -1490,6 +1582,7 @@ function! s:CCTreeWindow.mEnter() dict
         setlocal bufhidden=hide
         setlocal noswapfile
         setlocal nonumber
+        setlocal nowrap
 
         setlocal statusline=%=%{CCTreeWindowPreviewStatusLine()}
 
@@ -1497,7 +1590,7 @@ function! s:CCTreeWindow.mEnter() dict
         let cpo_save = &cpoptions
         set cpoptions&vim
 
-        call s:CCTreeBufferKeyMappingsCreate() 
+        call s:CCTreeBufferKeyMappingsCreate(s:CCTreeKeyMappings) 
 	
         nnoremap <buffer> <silent> <C-p>  :CCTreePreviewBufferUsingTag<CR>
         nnoremap <buffer> <silent> <CR>  :CCTreeLoadBufferUsingTag<CR>
@@ -1622,6 +1715,7 @@ endfunction
 
 " }}}
 " {{{ CCTree Buffer mappings
+
 function! s:CCTreeWindowGetHiKeyword()
     let keyw = expand("<cword>")
     let keyf = expand("<cfile>")
@@ -1640,15 +1734,29 @@ function! s:CCTreeWindowGetHiKeyword()
     return ''
 endfunction
 
-function! s:CCTreeBufferKeyMappingsCreate()
-     let func_expr = '<SNR>'.s:sid.'CCTreeWindowGetHiKeyword()'
-     exec 'nnoremap <buffer> <silent> <C-\>< :CCTreeTraceReverse <C-R>='.func_expr.'<CR><CR>'
-     exec 'nnoremap <buffer> <silent> <C-\>> :CCTreeTraceForward <C-R>='.func_expr.'<CR><CR>'
-     exec 'nnoremap <silent> <C-\>y :CCTreeWindowSaveCopy<CR>'
-     exec 'nnoremap <silent> <C-\>w :CCTreeWindowToggle<CR>'
 
-     nnoremap <buffer> <silent> <C-\>= :CCTreeRecurseDepthPlus<CR> 
-     nnoremap <buffer> <silent> <C-\>- :CCTreeRecurseDepthMinus<CR> 
+function! s:CCTreeBufferKeyMappingsCreate(kmaps)
+     exec 'command! -buffer -nargs=0 CCTreeWindowHiCallTree call <SNR>'.s:sid.
+                                \'CCTreeCursorHoldHandleEvent()'
+     command! -buffer -nargs=0 CCTreeWindowHiCallTree 
+                                \ call s:CCTreeGlobals.mCursorHoldHandleEvent()
+     let func_expr = '<SNR>'.s:sid.'CCTreeWindowGetHiKeyword()'
+     exec 'nnoremap <buffer> <silent> '.a:kmaps.CTreeR.' :CCTreeTraceReverse <C-R>='.
+                                                  \ func_expr.'<CR><CR>'
+     exec 'nnoremap <buffer> <silent> '.a:kmaps.CTreeF.' :CCTreeTraceForward <C-R>='
+                                                \ .func_expr.'<CR><CR>'
+     exec 'nnoremap <buffer> <silent> '.a:kmaps.CTreeHilight.
+                                                 \' :CCTreeWindowHiCallTree<CR>'
+     exec 'nnoremap <buffer> <silent> '.a:kmaps.CTreeCompress.
+                                                 \ ' :2,.foldclose!<CR>zv'
+
+     exec 'nnoremap <silent> '.a:kmaps.CTreeWSave. ' :CCTreeWindowSaveCopy<CR>'
+     exec 'nnoremap <silent> '.a:kmaps.CTreeWToggle. ' :CCTreeWindowToggle<CR>'
+
+     exec 'nnoremap <buffer> <silent> '.a:kmaps.CTreeDepthPlus.
+                                    \ ' :CCTreeRecurseDepthPlus<CR>'
+     exec 'nnoremap <buffer> <silent> '.a:kmaps.CTreeDepthMinus.
+                                    \ ' :CCTreeRecurseDepthMinus<CR>'
 endfunction
 
 augroup CCTreeMaps
@@ -1657,7 +1765,9 @@ au!
 " This is a bug in Vim 7.2, a patch needs to be applied to the runtime c
 " syntax files
 " For now, use this hack to make *.h files work
-autocmd FileType * if &ft == 'c'|| &ft == 'cpp' |call s:CCTreeBufferKeyMappingsCreate()| endif
+autocmd FileType *   if &ft == 'c'|| &ft == 'cpp' |
+                   \ call s:CCTreeBufferKeyMappingsCreate(s:CCTreeKeyMappings)|
+                   \ endif
 augroup END
 
 
@@ -1775,20 +1885,20 @@ endfunction
 " }}}
 " {{{ Syntax coloring definitions
 "Standard display
-highlight link CCTreeSymbol  Function
-highlight link CCTreeMarkers LineNr
-highlight link CCTreeArrow CCTreeMarkers
-highlight link CCTreePathMark CCTreeArrow
-highlight link CCTreeHiPathMark CCTreePathMark
+highlight default link CCTreeSymbol  Function
+highlight default link CCTreeMarkers LineNr
+highlight default link CCTreeArrow CCTreeMarkers
+highlight default link CCTreePathMark CCTreeArrow
+highlight default link CCTreeHiPathMark CCTreePathMark
 
 " highlighted display
-highlight link CCTreeHiSymbol  TODO
-highlight link CCTreeHiMarkers NonText
-highlight link CCTreeHiArrow  CCTreeHiMarkers
-highlight link CCTreeUpArrowBlock CCTreeHiArrow
+highlight default link CCTreeHiSymbol  TODO
+highlight default link CCTreeHiMarkers NonText
+highlight default link CCTreeHiArrow  CCTreeHiMarkers
+highlight default link CCTreeUpArrowBlock CCTreeHiArrow
 
-highlight link CCTreeMarkExcl Ignore
-highlight link CCTreeMarkTilde Ignore
+highlight default link CCTreeMarkExcl Ignore
+highlight default link CCTreeMarkTilde Ignore
 "}}}
 " {{{  CCTree global state
 
@@ -1810,6 +1920,7 @@ function! s:CCTreePreviewState.mStore(symbol, direction)
     let self.direction = a:direction
 endfunction
 " }}}
+
 " {{{ CCTree global objects
 
 let s:CCTreeGlobals = {
@@ -1820,6 +1931,14 @@ let s:CCTreeGlobals = {
                         \}
 
 let g:CCTreeGlobals = s:CCTreeGlobals
+
+function! s:CCTreeGlobals.mEnable(opt) dict
+    call s:CCTreeOptions[a:opt](1)
+endfunction
+
+function! s:CCTreeGlobals.mDisable(opt) dict
+    call s:CCTreeOptions[a:opt](0)
+endfunction
 
 function! s:CCTreeGlobals.mGetSymNames() dict
     return keys(self.XRefDb.symnamehash)
@@ -1906,6 +2025,17 @@ function! s:CCTreeGlobals.mDisplayToggle() dict
     call self.Window.mDisplayToggle()
 endfunction
 
+function! s:CCTreeGlobals.mSetupDynamicCallTreeHiLightEvent() dict
+    augroup CCTreeGeneral
+        au!
+        if g:CCTreeHilightCallTree == 1
+            exec 'autocmd CursorMoved '.s:windowtitle.' call s:CCTreeGlobals.mCursorHoldHandleEvent()'
+        endif
+        autocmd EncodingChanged * call s:CCTreeGlobals.mEncodingChangedHandleEvent()
+    augroup END
+endfunction
+
+
 function! s:CCTreeGlobals.mPreviewSave() dict
     let rtitle = s:CCTreeGlobals.Window.mBuildStatusLine(
                 \ s:CCTreeGlobals.PreviewState,
@@ -1922,7 +2052,7 @@ function! s:CCTreeGlobals.mPreviewSave() dict
 endfunction
 
 function! s:CCTreeGlobals.mCursorHoldHandleEvent() dict
-    if g:CCTreeHilightCallTree && self.Window.mGetKeywordAtCursor() != s:CCTreeRC.Error
+    if self.Window.mGetKeywordAtCursor() != s:CCTreeRC.Error
        setlocal modifiable
        call self.Window.mClearMarks()
        call self.Window.mMarkCallTree(b:displayTree.entries,
@@ -1934,16 +2064,43 @@ endfunction
 function! s:CCTreeGlobals.mEncodingChangedHandleEvent() dict
     let self.Window.treeMarkers = s:CCTreeMarkers.mCreate()
     if s:CCTreeGlobals.Window.mIsOpen() == s:CCTreeRC.True
+        call s:CCTreeGlobals.Window.mClose()
         call s:CCTreeGlobals.mUpdateForCurrentSymbol()
     endif
 endfunction
 
-augroup CCTreeGeneral
-    au!
-    "autocmd CursorHold CCTree-Preview call s:CCTreeGlobals.mCursorHoldHandleEvent()
-    exec 'autocmd CursorMoved '.s:windowtitle.' call s:CCTreeGlobals.mCursorHoldHandleEvent()'
-    autocmd EncodingChanged * call s:CCTreeGlobals.mEncodingChangedHandleEvent()
-augroup END
+function! s:CCTreeCursorHoldHandleEvent()
+    call s:CCTreeGlobals.mCursorHoldHandleEvent()
+endfunction
+
+function! s:CCTreeGlobals.mInit() dict
+    call self.mSetupDynamicCallTreeHiLightEvent()
+endfunction
+
+" }}}
+" {{{ CCTree options
+function! s:CCTreeSetUseCallTreeHiLights(val) 
+    let g:CCTreeHilightCallTree = a:val
+    call s:CCTreeGlobals.mSetupDynamicCallTreeHiLightEvent()
+endfunction
+
+function! s:CCTreeSetUseUtf8Symbols(val) 
+    let g:CCTreeUseUTF8Symbols = a:val
+    call s:CCTreeGlobals.mEncodingChangedHandleEvent()
+endfunction
+
+function! s:CCTreeOptionsList(arglead, cmdline, cursorpos) 
+    let opts = keys(s:CCTreeOptions)
+    if a:arglead == ''
+        return opts
+    else
+        return filter(opts, 'v:val =~? a:arglead')
+    endif
+endfunction
+
+let s:CCTreeOptions = {'UseUnicodeSymbols': function('s:CCTreeSetUseUtf8Symbols'),
+            \ 'DynamicTreeHiLights': function('s:CCTreeSetUseCallTreeHiLights')
+            \}
 
 " }}}
 " {{{ Vim tags interface
@@ -2008,6 +2165,8 @@ function! s:CCTreeGlobals.mLoadBufferFromKeyword()
             try
                 " Ctags is smart enough to figure the path
                 exec "tag ".fnamemodify(hiKeyword, ":t")
+            catch /^Vim\%((\a\+)\)\=:E433/
+                call s:CCTreeUtils.mWarningMsg('Tag file not found')
             catch /^Vim\%((\a\+)\)\=:E426/
                 call s:CCTreeUtils.mWarningMsg('Tag '. hiKeyword .' not found')
                 wincmd p
@@ -2051,9 +2210,12 @@ command! -nargs=0 CCTreeRecurseDepthMinus call s:CCTreeGlobals.mRecursiveDepthDe
 " Preview Window
 command! -nargs=0 CCTreeWindowToggle 	call s:CCTreeGlobals.mDisplayToggle()
 command! -nargs=0 CCTreeWindowSaveCopy call s:CCTreeGlobals.mPreviewSave()
+" Run-time dynamic options
+command! -nargs=1 -complete=customlist,s:CCTreeOptionsList CCTreeOptsEnable call s:CCTreeGlobals.mEnable(<q-args>)
+command! -nargs=1 -complete=customlist,s:CCTreeOptionsList CCTreeOptsDisable call s:CCTreeGlobals.mDisable(<q-args>)
 "}}}
-" {{{ finish
-
+" {{{ finish (and init)
+call s:CCTreeGlobals.mInit()
 " restore 'cpo'
 let &cpoptions = s:cpo_save
 unlet s:cpo_save
