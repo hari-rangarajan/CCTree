@@ -5,7 +5,7 @@ Project details/Screenshots:
  
   Description:
        Plugin generates call-trees for any function or macro in real-time inside  Vim. (Functionality similar to that seen in other IDEs like
-Kscope, Source navigator, Eclipse)
+Kscope, Source navigator, Eclipse). Currently supported language: C.
 
   Requirements: 1) Cscope          2) Vim 7.xx 
 
