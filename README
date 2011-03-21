@@ -1,13 +1,10 @@
 This is a mirror of http://www.vim.org/scripts/script.php?script_id=2368
 
-Project details/Screenshots:
-                 http://sites.google.com/site/vimcctree/
- 
-  Description:
-       Plugin generates call-trees for any function or macro in real-time inside  Vim. (Functionality similar to that seen in other IDEs like
-Kscope, Source navigator, Eclipse). Currently supported language: C.
+Description:
+       Plugin generates call trees (aka function call dependencies) for any function or macro in real-time inside Vim using Cscope database. (Functionality similar to that of tools like CBrowser, Kscope, Source navigator, Eclipse, Source Insight). Currently supported language: C.
 
   Requirements: 1) Cscope          2) Vim 7.xx 
 
- 
+Project details/Screenshots:
+                 http://sites.google.com/site/vimcctree/ 
  

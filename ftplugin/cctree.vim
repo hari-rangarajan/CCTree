@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: March 09, 2011
-"      Version: 1.07
+"  Last Change: March 21, 2011
+"      Version: 1.21 
 "
 "=============================================================================
 " 
@@ -70,6 +70,15 @@
 "           To unload all databases, use command ":CCTreeUnLoadDB"
 "	    Note: There is no provision to unload databases individually
 "
+"           To save the current set of databases loaded in to memory onto disk
+"           in native CCTree XRef format, use command ":CCTreeSaveXRefDB"
+"
+"           To load a saved native CCTree XRef format file, use 
+"           command ":CCTreeLoadXRefDB"
+"
+"           Notes: No merging database support for CCTree native DB's [at present].
+"
+"
 "	    To have multiple CCTree preview windows, use ":CCTreeWindowSaveCopy"
 "	    Note: Once saved, only the depth of the preview window can be changed
 "
@@ -106,8 +115,12 @@
 "          Command List:
 "             CCTreeLoadDB                <dbname>
 "             CCTreeAppendDB              <dbname>
+"             CCTreeLoadXRefDB            <dbname>
+"             CCTreeSaveXRefDB            <dbname>
+"
 "             CCTreeUnLoadDB             
 "	      CCTreeShowLoadedDBs
+"
 "             CCTreeTraceForward          <symbolname>
 "             CCTreeTraceReverse          <symbolname>     
 "             CCTreeRecurseDepthPlus     
@@ -190,8 +203,8 @@
 "		or VimScript's perl interpreter interface (:version must indicate +perl)
 "
 "		The following settings are tailored to suit GNU coreutils split; the default
-"		settings should work with no changes on linux/unix standard installations
-"		(Windows/Mac might require installation of unixutils or equivalent)
+"		settings should work with no changes on typical linux/unix distros 
+"		(Monopoly OSes will require installation of unixutils or equivalent)
 "
 "		External command is setup with the following parameters:
 "	        g:CCTreeSplitProgCmd = 'PROG_SPLIT SPLIT_OPT SPLIT_SIZE IN_FILE OUT_FILE_PREFIX'
@@ -226,6 +239,19 @@
 "	
 "			For more info on setting up perl interface
 "			:help perl-using or :help perl-dynamic
+"
+"               Writing large Xref Databases:
+"                   CCTree can use external utilities to write extremely large files beyond
+"               VimScripts capabilities. It requires the use of an external tool that can 
+"               join text files (i.e., 'cat' in unix). This utility is triggered if the size
+"               of the file being written exceeds g:CCTreeDbFileMaxSize (40 Mb or as configured)
+"
+"               The join utility command is configured by default as follows:
+"               let CCTreeJoinProgCmd = 'PROG_JOIN JOIN_OPT IN_FILES > OUT_FILE'
+"
+"               let  g:CCTreeJoinProg = 'cat'           " PROG_JOIN
+"               let  g:CCTreeJoinProgOpts = ""          " JOIN_OPT
+"
 "
 "  }}}		
 "  {{{ Limitations:
@@ -357,6 +383,10 @@ unmap <SID>xx
 if !exists('CCTreeCscopeDb')
     let CCTreeCscopeDb = "cscope.out"
 endif
+" revisit
+if !exists('CCTreeDb')
+    let CCTreeDb = "cctree.out"
+endif
 if !exists('CCTreeRecursiveDepth')
     let CCTreeRecursiveDepth = 3
 endif
@@ -436,11 +466,29 @@ if !exists('CCTreeDbFileSplitLines')
     let CCTreeDbFileSplitLines = -1
 endif
 
+if !exists('CCTreeSplitProgCmd')
+    let CCTreeSplitProgCmd = 'PROG_SPLIT SPLIT_OPT SPLIT_SIZE IN_FILE OUT_FILE_PREFIX'
+endif
+
 if !exists('CCTreeDbFileMaxSize')
     " if SPLIT_OPT is -C 
     let CCTreeDbFileMaxSize = 40000000 "40 Mbytes
 endif
 
+" }}}
+" {{{ Join/Cat prog
+if !exists('CCTreeJoinProgCmd')
+    let CCTreeJoinProgCmd = 'PROG_JOIN JOIN_OPT IN_FILES > OUT_FILE'
+endif
+
+if !exists('CCTreeJoinProg')
+    "PROG_JOIN
+    let CCTreeJoinProg = 'cat'
+endif
+
+if !exists('CCTreeJoinProgOpts')
+    let CCTreeJoinProgOpts = ""
+endif
 " }}}
 " {{{ Misc (perl)
 if !exists('CCTreeUsePerl')
@@ -454,6 +502,7 @@ PERL_EOF
     endif
 endif
 endif
+
 if !exists('CCTreeUseUTF8Symbols')
     let CCTreeUseUTF8Symbols = 0
 endif
@@ -463,6 +512,9 @@ endif
 let s:pluginname = 'CCTree'
 let s:windowtitle = 'CCTree-View'
 let s:windowsavetitle = 'CCTree-View-Copy'
+
+let s:cscopeid = 'Cscope'
+let s:cctreexref = 'CCTree XRef'
 
 " }}}
 " {{{ Turn on/off debugs
@@ -481,18 +533,84 @@ function! DBGredir(...)
     endif
 endfunction
 
+function! Pause()
+    call input("sasasD", "asdads")
+endfunction
 " }}}
-" {{{ Progress bar
-let s:ProgressBar = {
+" {{{ Progress bar (generic, numeric, rolling)
+let s:GenericProgressBar= {
+                \ 'depth': 0,
+                \ 'depthChar': '',
+                \ 'currentChar': 0,
+                \ 'updateTime': 0,
+                \ 'rangeChars': [],
+                \ 'formatStr' : '',
+                \ 'units' : ''
+                \ }
+
+function! s:GenericProgressBar.mCreate(rangechars, depthchar, fmtStr) 
+    let pbr = deepcopy(s:GenericProgressBar)
+    unlet pbr.mCreate
+
+    let pbr.rangeChars = a:rangechars
+    let pbr.depthChar = a:depthchar
+    let pbr.formatStr = a:fmtStr
+
+    return pbr
+endfunction
+
+function! s:GenericProgressBar.mSetDepth(val) dict
+    let self.depth = a:val
+endfunction
+
+function! s:GenericProgressBar.mUpdate() dict
+    let staticchars = repeat(self.depthChar, self.depth)
+    let displayStr = substitute(self.formatStr, "\@PROGRESS\@", 
+                       \ staticchars . self.rangeChars[self.currentChar], "")
+    call s:StatusLine.mSetExtraInfo(displayStr)
+endfunction
+
+function! s:GenericProgressBar.mDone()
+        call s:StatusLine.mSetExtraInfo("")
+endfunction
+
+let s:ProgressBarRoll = {
+                        \ 'updateTime' : 0,
+                        \ 'curTime' : 0
+                        \}
+
+function! s:ProgressBarRoll.mCreate(rollchars, depthChar) dict
+    let gpbr = s:GenericProgressBar.mCreate(a:rollchars, a:depthChar, "\@PROGRESS\@")
+    let pbr = extend(gpbr, deepcopy(s:ProgressBarRoll))
+    unlet pbr.mCreate
+    
+    let pbr.curTime = localtime()
+
+    return pbr
+endfunction
+
+function! s:ProgressBarRoll.mTick(count) dict
+    if (localtime() - self.curTime) > self.updateTime
+        let self.currentChar += 1
+        if self.currentChar == len(self.rangeChars)
+            let self.currentChar = 0
+        endif
+        let self.curTime = localtime()
+        call self.mUpdate()
+    endif
+endfunction
+
+let s:ProgressBarNumeric = {
                 \ 'progress1current' : 0,
                 \ 'progressmax' : 0,
                 \ 'progress1percent' : 0,
                 \ 'progresspercent' : 0,
-                \ 'units' : ''
                 \}
 
-function! s:ProgressBar.mCreate(maxcount, unit) dict
-        let progressbar = deepcopy(s:ProgressBar)
+function! s:ProgressBarNumeric.mCreate(maxcount, unit) dict
+        let gpbr = s:GenericProgressBar.mCreate(range(1,a:maxcount), '',
+            \ "Processing \@PROGRESS\@\%, total ". a:maxcount . " " . a:unit) 
+        let progressbar = extend(gpbr, deepcopy(s:ProgressBarNumeric))
         unlet progressbar.mCreate
 
         let progressbar.progressmax = a:maxcount
@@ -504,20 +622,17 @@ function! s:ProgressBar.mCreate(maxcount, unit) dict
 endfunction
 
 
-function! s:ProgressBar.mTick(count) dict
+function! s:ProgressBarNumeric.mTick(count) dict
         let self.progress1current += a:count
         if self.progress1percent <= self.progress1current
             let tmp =  (self.progress1current/self.progress1percent)
             let self.progresspercent += tmp
             let self.progress1current -= tmp * self.progress1percent
-            call s:StatusLine.mSetExtraInfo("Processing ". self.progresspercent . 
-                        \ "\%, total ". self.progressmax. " ". self.units) 
+            let self.currentChar += 1
+            call self.mUpdate()
         endif
 endfunction
 
-function! s:ProgressBar.mDone()
-        call s:StatusLine.mSetExtraInfo("")
-endfunction
 " }}}
 " {{{ Status line 
 let s:StatusLine = {
@@ -526,26 +641,30 @@ let s:StatusLine = {
                     \ 'cursym' : 0,
                     \ 'savedStatusLine' : '',
                     \ 'statusextra' : '',
+                    \ 'local':0
                     \}
 
-
 function! s:StatusLine.mInit() dict
-    let s:StatusLine.savedStatusLine = &l:statusline
+    let self.savedStatusLine = &l:statusline
     setlocal statusline=%{CCTreeStatusLine()}
 endfunction
         
 function! s:StatusLine.mRestore() dict
+    let self.currentstatus = ''
+    let self.statusextra = ''
+
     let &l:statusline = s:StatusLine.savedStatusLine
+    redrawstatus!
 endfunction
 
 function! s:StatusLine.mSetInfo(msg) dict
     let s:StatusLine.currentstatus = a:msg
-    redrawstatus
+    redrawstatus!
 endfunction
 
 function! s:StatusLine.mSetExtraInfo(msg) dict
     let s:StatusLine.statusextra = a:msg
-    redrawstatus
+    redrawstatus!
 endfunction
 
 function! CCTreeStatusLine() 
@@ -554,8 +673,11 @@ function! CCTreeStatusLine()
            \ s:StatusLine.statusextra
 endfunction
 "}}}
-" {{{ Virtual file interface
-function! s:MiscSplitUtilShellCmdPrep(inFile, outFile)
+" {{{ Shell command interface
+
+let s:ShellCmds = {}
+
+function! s:ShellCmds.mSplit(inFile, outFile)
 	let cmdEx = substitute(g:CCTreeSplitProgCmd, "PROG_SPLIT", g:CCTreeSplitProg,"")
 	let cmdEx = substitute(cmdEx, "SPLIT_OPT", g:CCTreeSplitProgOption,"")
 	if g:CCTreeDbFileSplitLines != -1
@@ -569,7 +691,106 @@ function! s:MiscSplitUtilShellCmdPrep(inFile, outFile)
 	return cmdEx
 endfunction
 
-let s:vFile = {
+function! s:ShellCmds.mJoin(inFileList, outFile)
+	let cmdEx = substitute(g:CCTreeJoinProgCmd, "PROG_JOIN", g:CCTreeJoinProg,"")
+	let cmdEx = substitute(cmdEx, "JOIN_OPT", g:CCTreeJoinProgOpts,"")
+	let cmdEx = substitute(cmdEx, "IN_FILES", a:inFileList,"")
+	let cmdEx = substitute(cmdEx, "OUT_FILE", a:outFile,"")
+
+        return cmdEx
+endfunction
+
+function! s:ShellCmds.mExec(cmd)
+    let cmdoutput = system(a:cmd)
+    if cmdoutput != ''
+         " Failed
+         return s:CCTreeRC.Error
+    endif
+    return s:CCTreeRC.Success
+endfunction
+
+" }}}
+
+" {{{ Virtual file interface
+let s:vFile = {}
+
+function! s:vFile.mCreate(fname, mode) 
+    if a:mode == 'r'
+        return s:vFileR.mCreate(a:fname)
+    elseif a:mode == 'w'
+        return s:vFileW.mCreate(a:fname)
+    endif
+    return -1
+endfunction
+
+let s:vFileW = {
+	    \ 'splitfiles' : [],
+	    \ 'totSplits' : 0,
+	    \ 'lines' : [],
+	    \ 'fileSize' : 0
+            \}
+
+function! s:vFileW.mCreate(fname)  dict
+        let vfile =  deepcopy(s:vFileW)
+        unlet vfile.mCreate
+	let vfile.link = a:fname
+
+        return vfile
+endfunction
+
+function! s:vFileW.mCreateSplit()  dict
+    " first split, create name
+    if self.totSplits == 0
+        let self.tlink =  tempname()
+    endif
+    let fname = self.tlink .'_'. self.totSplits
+    call writefile(self.lines, fname)
+    call add(self.splitfiles, fname)
+    let self.lines = []
+    let self.totSplits += 1
+endfunction
+
+function! s:vFileW.mTestForSplit()  dict
+    if self.fileSize > g:CCTreeDbFileMaxSize 
+        call self.mCreateSplit()
+    endif
+endfunction
+
+function! s:vFileW.mAddFileSize(size)  dict
+    let self.fileSize += a:size
+endfunction
+
+function! s:vFileW.mWriteList(linelist)  dict
+    call extend(self.lines, a:linelist)
+    call self.mTestForSplit()
+endfunction
+
+function! s:vFileW.mWriteLine(line)  dict
+    call add(self.lines, a:line)
+    call self.mAddFileSize(len(a:line))
+    call self.mTestForSplit()
+endfunction
+
+function! s:vFileW.mClose()  dict
+    if self.totSplits == 0
+        call writefile(self.lines, self.link)
+    else
+        " force remaining lines into a new split
+        call self.mCreateSplit()
+        " now join all of them
+        let filelist = join(self.splitfiles, " ")
+        let cmdEx = s:ShellCmds.mJoin(filelist, self.link)
+        if s:ShellCmds.mExec(cmdEx) != s:CCTreeRC.Success
+             call s:CCTreeUtils.mWarningMsg("Shell command: ".cmdEx. " failed!")
+        endif
+    endif
+    for afile in self.splitfiles
+       call delete(afile)
+    endfor
+    return 0
+endfunction
+
+let s:vFileR = {
 	    \ 'splitfiles' : [],
 	    \ 'currentSplitIdx' : 0,
 	    \ 'totSplits' : 0,
@@ -579,37 +800,39 @@ let s:vFile = {
             \}
 
 
-function! s:vFile.mIsLargeFile()  dict
+function! s:vFileR.mIsLargeFile()  dict
 	if (getfsize(self.link) > g:CCTreeDbFileMaxSize)
 		return 1
 	endif
 	return 0
 endfunction
 
-function! s:vFile.mCreate(fname, mode)  dict
-        let vfile =  deepcopy(s:vFile)
+function! s:vFileR.mCreate(fname)  dict
+        let vfile =  deepcopy(s:vFileR)
         unlet vfile.mCreate
 	let vfile.link = a:fname
         let vfile.valid = filereadable(a:fname)
 	let vfile.size = getfsize(a:fname)
 
-        let vfile.mode = a:mode
 	return vfile
 endfunction
 
-function! s:vFile.mOpen()  dict
+function! s:vFileR.mOpen()  dict
+        if self.mode == 'w'
+            " no need to do anything
+            return 0
+        endif
+
 	if self.mIsLargeFile() == 0
 		"little trick to keep interface uniform when we don't split
 		call add(self.splitfiles, self.link)
 		let self.totSplits = 1
 	else
 		let tmpDb = tempname()
-		let cmdEx = s:MiscSplitUtilShellCmdPrep(self.link, tmpDb)
+		let cmdEx = s:ShellCmds.mSplit(self.link, tmpDb)
 
-		let cmdoutput = system(cmdEx)
-		if cmdoutput != ''
-		     " Failed
-		     echomsg "Shell command: ".cmdEx. " failed!"
+                if s:ShellCmds.mExec(cmdEx) != s:CCTreeRC.Success
+		     call s:CCTreeUtils.mWarningMsg("Shell command: ".cmdEx. " failed!")
 		     return -1
 		else
 		     let self.splitfiles = split(expand(tmpDb."*"), "\n")
@@ -622,11 +845,9 @@ function! s:vFile.mOpen()  dict
 	return 0
 endfunction
 
-function! s:vFile.mRawRead(numLines)  dict
-    return readfile(self.link, '', a:numLines)
-endfunction
 
-function! s:vFile.mRead()  dict
+
+function! s:vFileR.mRead()  dict
 	if (self.currentSplitIdx >= len(self.splitfiles))
 		" out of bounds
 		return -1
@@ -636,12 +857,13 @@ function! s:vFile.mRead()  dict
 	return 0
 endfunction
 
-function! s:vFile.mReset()  dict
+function! s:vFileR.mReset()  dict
 	let self.currentSplitIdx = 0
 	let self.lines = []
 endfunction
 
-function! s:vFile.mClose()  dict
+
+function! s:vFileR.mClose()  dict
 	if self.totSplits == 1
 	    return 
 	endif
@@ -664,15 +886,18 @@ function! s:StopWatch.mCreate()	dict
 endfunction
 
 function! s:StopWatch.mReset()	dict
-    let self.text = "(no reltime feature)"
-    if has('reltime')
+    if has('reltime') 
         let self.startRTime = reltime()
+    else
+        let self.startRTime = localtime()
     endif
 endfunction
 
 function! s:StopWatch.mSnapElapsed()  dict
     if has('reltime')
 	let self.text = reltimestr(reltime(self.startRTime))
+    else
+        let self.text = localtime() - self.startRTime
     endif
 endfunction
 
@@ -688,12 +913,12 @@ let s:CharMaps = {
 
 " The encoding needs to be changed to 8-bit, otherwise we can't swap special 
 " 8-bit characters; restore after done
-function! s:CharMaps.mInitEncoding() dict
+function! s:CharMaps.mInitTranslator() dict
     	let self.savedEncoding = &encoding
 	let &encoding="latin1"
 endfunction
 
-function! s:CharMaps.mRestoreEncoding() dict
+function! s:CharMaps.mDoneTranslator() dict
         let &encoding=self.savedEncoding
 endfunction
 
@@ -710,18 +935,16 @@ endfunction
 let s:TranslateMap = {}
 
 function! s:TranslateMap.mCreate (srcsym, destsym, regex) dict
-    let dicttable = deepcopy(s:TranslateMap)
-    unlet dicttable.mCreate
+    let dicttable = extend(deepcopy(s:CharMaps), deepcopy(s:TranslateMap))
+    unlet dicttable.CrossProduct
 
     let dicttable.mappings = {}
     
-    if len(a:srcsym) != len (a:destsym)
-	" can't map
-	return -1
-    endif
+    " map lower
+    let maxsym = min([len(a:srcsym),len (a:destsym)])
     
     let index = 0
-    while (index < len(a:srcsym)) 
+    while (index < maxsym) 
 	let dicttable.mappings[a:srcsym[index]] =  a:destsym[index]
 	let index += 1
     endwhile
@@ -757,20 +980,32 @@ function! s:TranslateMap.mTranslateFast(value) dict
     return retval
 endfunction
 
+function! s:CCTreeGetXRefDbMaps(maptype)
+	let dichar1 = ",0123456789"	
+	let dichar2 = ",0123456789"
+        
+        return s:CCTreeCreateGenericMaps(a:maptype, dichar1, dichar2)
+endfunction
 
 function! s:CCTreeGetCscopeMaps(maptype)
 	let dichar1 = " teisaprnl(of)=c"	
 	let dichar2 = " tnerpla"
 
+        return s:CCTreeCreateGenericMaps(a:maptype, dichar1, dichar2)
+endfunction
+
+function! s:CCTreeCreateGenericMaps(maptype, dichar1, dichar2)
+        call s:CharMaps.mInitTranslator()
         let ab = map(range(128,255), 'nr2char(v:val)')
-        let ac =  s:CharMaps.CrossProduct(dichar1, dichar2) 
+        let ac =  s:CharMaps.CrossProduct(a:dichar1, a:dichar2) 
 	if a:maptype == 'Compress'
 		let maps = s:TranslateMap.mCreate(ac, ab, 
-                                \'\(['.dichar1.']['.dichar2.']\)')
+                                \'\(['.a:dichar1.']['.a:dichar2.']\)')
 	elseif a:maptype == 'Uncompress'
 		let maps = s:TranslateMap.mCreate(ab, ac,
                                 \'\([\d128-\d255]\)')
 	endif
+        call s:CharMaps.mDoneTranslator()
         return maps
 endfunction
 " }}}
@@ -841,7 +1076,280 @@ function! s:Utils.mStrlenEx(val)
     return strlen(substitute(a:val, ".", "x", "g"))
 endfunc
 " }}}
+" {{{ Generic db loader interface
+let s:GenericDbLdr = {
+        \ 'fDBName' : '',
+        \ 'class' : 'Generic',
+        \ }
 
+function! s:GenericDbLdr.mCreate(fname) dict
+    let gdb = deepcopy(s:GenericDbLdr)
+    unlet gdb.mCreate
+    let gdb.fDBName = a:fname
+    
+    if !filereadable(a:fname) 
+        return s:CCTreeRC.Error
+    endif
+
+    return gdb
+endfunction
+
+if has('perl') && g:CCTreeUsePerl == 1
+" Perl function
+function! s:GenericDbLdr.mLoadFileIntoXRefDb(xRefDb, gRdr)  dict
+    call a:gRdr.mProcessingStateInit()
+    call s:StatusLine.mSetInfo('(PERL) Loading database')
+    echomsg a:gRdr.perl_opts
+    let pBar = s:ProgressBarNumeric.mCreate(getfsize(self.fDBName), "bytes")
+perl << PERL_EOF
+    #use strict;
+    #use warnings FATAL => 'all';
+    #use warnings NONFATAL => 'redefine';
+
+    my $filebytes = 0;
+    my $filterpat = VIM::Eval("a:gRdr.perl_opts");
+
+    open (CSCOPEDB, VIM::Eval("self.fDBName")) or die "File trouble!";
+    VIM::DoCommand("echomsg '".$filterpat."'");
+
+    while (<CSCOPEDB>) {
+	$filebytes += length($_);
+        chomp($_);
+
+        if ($_ !~ $filterpat) {
+                next;	
+        }
+        VIM::DoCommand("call pBar.mTick(".$filebytes.")");
+        $filebytes = 0;
+        VIM::DoCommand("call a:gRdr.mProcessSymbol(a:xRefDb, '".$_."')");
+    }
+    VIM::DoCommand("call pBar.mDone()");
+    close(CSCOPEDB);
+PERL_EOF
+    call a:gRdr.mProcessingStateDone()
+endfunction
+else
+" Native Vim function
+function! s:GenericDbLdr.mLoadFileIntoXRefDb(xRefDb, gRdr) dict
+	let vDbFile = s:vFile.mCreate(self.fDBName, "r")
+        if vDbFile.valid == 0
+            return -1
+        endif
+	if vDbFile.mIsLargeFile() == 1
+		call s:StatusLine.mSetExtraInfo('Database '
+			\.' >'.g:CCTreeDbFileMaxSize .' bytes. Splitting '.
+			\'into smaller chunks... (this may take some time)')
+	endif
+	try
+		if vDbFile.mOpen() == 0
+			call self.mReadFileIntoXRefDb(vDbFile,
+                                                \ a:xRefDb,
+                                                \ a:gRdr)
+		endif
+	finally
+		call vDbFile.mClose()
+	endtry
+endfunction
+endif
+
+function! s:GenericDbLdr.mReadFileIntoXRefDb(vDbFile, xrefdb, gRdr)
+    call a:gRdr.mProcessingStateInit()
+    while 1 == 1
+	if a:vDbFile.mRead() == -1
+	    break
+	endif
+	let idxstr = '('.a:vDbFile.currentSplitIdx.'/'.a:vDbFile.totSplits.') '
+	call s:StatusLine.mSetInfo('Reading database chunk '.idxstr)
+	" Filter-out lines that doesn't have relevant information
+	let plist = a:gRdr.mReadLinesFromFile(a:vDbFile, a:gRdr.opts)
+	let pBar = s:ProgressBarNumeric.mCreate(len(plist), "items")
+	call s:StatusLine.mSetInfo('Analyzing database chunk '.idxstr)
+	call self.mProcessListIntoXrefDb(plist, a:gRdr, a:xrefdb, pBar)
+	call pBar.mDone()
+    endwhile
+    call a:gRdr.mProcessingStateDone()
+endfunction
+
+function! s:GenericDbLdr.mProcessListIntoXrefDb(symbols, rdr, xrefdb, pbar)
+    for a in a:symbols
+        call a:pbar.mTick(1)
+        call a:rdr.mProcessSymbol(a:xrefdb, a)
+    endfor
+endfunction
+    
+function! s:GenericDbLdr.mParseDbHeader(gRdr)
+    let header = readfile(self.fDBName, "", a:gRdr.headerLines)
+    return a:gRdr.mParseDbHeader(header)
+endfunction
+    
+" }}}
+
+" {{{ TagFile utils
+let s:CCTreeTagDbRdr = {'class': 'CCTreeXrefDb',
+                    \ 'headerLines' : 4,
+                    \ 'compressed' : 0,
+                    \ 'opts': ['v:val !~ "^[\!]"'],
+                    \ 'perl_opts': "^[^\!]",
+                    \ 'mapPreKeys': {'c':'','p':''},
+                    \ 'mapPostKeys': {'c':'','p':''}
+                    \ }
+
+function! s:CCTreeTagDbRdr.mCreate(fname) dict
+    let cctxdbrdr = deepcopy(s:CCTreeTagDbRdr)
+    unlet cctxdbrdr.mCreate
+    
+    return cctxdbrdr
+endfunction
+
+function! s:CCTreeTagDbRdr.mRequirePreProcessing() dict
+    return s:CCTreeRC.False
+endfunction
+
+function! s:CCTreeTagDbRdr.mRequirePostProcessing() dict
+    return s:CCTreeRC.True 
+endfunction
+
+function! s:CCTreeTagDbRdr.mRequireCleanup() dict
+    " Clean-up all symbols [never]
+    return s:CCTreeRC.False
+endfunction
+
+function! s:CCTreeTagDbRdr.mGetPreProcessingMaps() dict
+    return s:CCTreeGetXRefDbMaps('Compress')
+endfunction
+
+function! s:CCTreeTagDbRdr.mGetPostProcessingMaps() dict
+    return s:CCTreeGetXRefDbMaps('Uncompress')
+endfunction
+
+
+function! s:CCTreeTagDbRdr.mParseDbHeader(hdr) dict
+    " just check line 3 for sanity
+    if a:hdr[2] =~ "CCTree"
+        return s:CCTreeRC.Success
+    endif
+    return s:CCTreeRC.Error
+endfunction
+
+function! s:CCTreeTagDbRdr.mProcessingStateInit() dict
+endfunction
+
+function! s:CCTreeTagDbRdr.mProcessingStateDone() dict
+endfunction
+
+function! s:CCTreeTagDbRdr.mReadLinesFromFile(vdbFile, filtercmds) dict
+    " Hard-coded assumptions here about format for performance
+    if empty(get(a:vdbFile.lines, 0)) != 1 && a:vdbFile.lines[0][0] == "!"
+    " filter out the first few lines starting with "!"
+        call remove(a:vdbFile.lines, 0, self.headerLines-1)
+    endif
+    return a:vdbFile.lines
+endfunction
+
+function! s:CCTreeTagDbRdr.mProcessSymbol(xrefdb, aline) dict
+    let cctreesym = self.mDecodeTagLine(a:aline)
+    call a:xrefdb.mInsertSym(cctreesym.idx, cctreesym)
+    " we really don't need idx any longer
+    unlet cctreesym.idx
+endfunction
+
+function! s:CCTreeTagDbRdr.mDecodeTagLine(tagline) dict
+
+	let items = split(a:tagline, "\t")
+        let newsym = s:CCTreeSym.mCreate("")
+        try 
+            let [newsym.idx, newsym.n] = split(items[0], '#')
+        catch
+            echomsg "problem decoding ". a:tagline
+        endtry
+
+        "let newsym.idx = strpart(items[0], 0, idxBr)
+        "let newsym.n =  items[0][ idxBr+1 : -2] "strpart(items[0], idxBr+1, strlen(items[0])-1)
+        if empty(get(items, 3)) != 1
+            let newsym.c = items[3][2:]
+        endif
+        if empty(get(items, 4)) != 1
+            let newsym.p = items[4][2:]
+        endif
+        return newsym
+endfunction
+
+" }}}
+" {{{ Generic Db Serializer
+let s:GenericDbSerializer = {}
+
+function! s:GenericDbSerializer.mCreate(xrefdb) dict
+    let gDbSerializer = deepcopy(s:GenericDbSerializer)
+    let gDbSerializer.xrefdb = a:xrefdb
+    return gDbSerializer
+endfunction
+
+function! s:GenericDbSerializer.mWriteXRefDbToFile(fname, 
+                                            \ gWriter) dict
+    call s:StatusLine.mInit()
+    try
+        call s:StatusLine.mSetInfo('Writing XRefDb')
+        let vDbFile = s:vFile.mCreate(a:fname, "w")
+        call vDbFile.mWriteList(a:gWriter.mBuildHeader())
+        call self.mWriteSymsToFile(vDbFile, a:gWriter)
+    finally
+        call vDbFile.mClose()
+        call s:StatusLine.mRestore()
+    endtry
+endfunction
+
+function! s:GenericDbSerializer.mWriteSymsToFile(dstVFile,
+                                            \ gWriter) dict
+    let pBar = s:ProgressBarNumeric.mCreate(self.xrefdb.mGetSymbolCount(),
+                                                    \ "items")
+    call a:gWriter.mInitWriting()
+    " write syms
+    for asymid in sort(self.xrefdb.mGetSymbolIds())
+        let  acctreesym = self.xrefdb.mGetSymbolFromId(asymid)
+	call a:dstVFile.mWriteLine(a:gWriter.mBuildTagLine(acctreesym, 
+                        \ asymid))
+        call pBar.mTick(1)
+    endfor
+    call pBar.mDone()
+    call a:gWriter.mDoneWriting()
+endfunction
+" }}}
+" {{{ CCTreeTagDb Writer
+let s:CCTreeTagDbWriter = {}
+
+function! s:CCTreeTagDbWriter.mCreate(tmaps) dict
+    let dbwriter = deepcopy(s:CCTreeTagDbWriter)
+    unlet dbwriter.mCreate
+
+    let dbwriter.tmaps = a:tmaps
+    return dbwriter
+endfunction 
+
+function! s:CCTreeTagDbWriter.mInitWriting() dict
+    call self.tmaps.mInitTranslator()
+endfunction 
+
+function! s:CCTreeTagDbWriter.mDoneWriting() dict
+    call self.tmaps.mDoneTranslator()
+endfunction 
+
+function! s:CCTreeTagDbWriter.mBuildHeader() dict
+    let hdr = []
+    call add(hdr, "!_TAG_FILE_FORMAT\t2	/extended format; --format=1 will not append ;\" to lines/")
+    call add(hdr, "!_TAG_FILE_SORTED\t1	/0=unsorted, 1=sorted, 2=foldcase/")
+    call add(hdr, "!_TAG_PROGRAM_NAME\tCCTree (Vim plugin)//")
+    call add(hdr, "!_TAG_PROGRAM_URL\thttp://vim.sourceforge.net/scripts/script.php?script_id=2368\t/site/")
+    return hdr
+endfunction
+
+function! s:CCTreeTagDbWriter.mBuildTagLine(sym, symid) dict
+	let basetag = a:symid .'#'. a:sym.n."\t"."\t"."/^\$/".";\""
+        let basetag .= "\tc:". self.tmaps.mTranslateFast(a:sym.c)
+        let basetag .= "\tp:". self.tmaps.mTranslateFast(a:sym.p)
+
+	return basetag
+endfunction
+" }}}
 " {{{ CCTree constants
 let s:CCTreeRC = {
                     \ 'Error' : -1,
@@ -865,30 +1373,59 @@ function! s:CCTreeSym.mCreate(name)
     let sym.n = a:name
     return sym
 endfunction
-" }}}
-" {{{ XRef Database object
 
-let s:xRefDb = {
+
+" }}}
+" {{{ GenericXref, XrefDb
+let s:GenericXRef = {}
+
+function! s:GenericXRef.mCreate(filedb) dict
+       let gxref = deepcopy(s:GenericXRef)
+       return gxref
+endfunction 
+
+function! s:GenericXRef.mInitState() dict
+endfunction 
+
+function! s:GenericXRef.mRestoreState() dict
+endfunction 
+" {{{ XRef Database object
+let s:xRefMemDb = {
 	\ 'symuniqid': 0,
 	\ 'symidhash' : {},
 	\ 'symnamehash' : {}
         \}
 
 
-function s:xRefDb.mCreate()   dict
-	let dbObj = deepcopy(s:xRefDb)
+function s:xRefMemDb.mCreate()   dict
+	let dbObj = deepcopy(s:xRefMemDb)
         unlet dbObj.mCreate
 
 	return dbObj
 endfunction
 
-function s:xRefDb.mDestroy()   dict
+function s:xRefMemDb.mClear()   dict
     let self.symidhash = {}
     let self.symnamehash = {}
     let self.symuniqid = 0
 endfunction
 
-function! s:xRefDb.mAddSym(name)    dict
+function! s:xRefMemDb.mInsertSym(idx, cctreesym)  dict
+    let self.symuniqid = max([self.symuniqid, a:idx])
+    let self.symidhash[a:idx] = a:cctreesym
+    let self.symnamehash[a:cctreesym.n] = a:idx
+endfunction
+
+function! s:xRefMemDb.mRemoveSymById(symidx)  dict
+    call self.mRemoveSymByName(acctreesym.n)
+    call remove(self.symidhash, a:symidx)
+endfunction
+
+function! s:xRefMemDb.mRemoveSymByName(symname)  dict
+    call remove(self.symnamehash, a:symname)
+endfunction
+
+function! s:xRefMemDb.mAddSym(name)    dict
     if !has_key(self.symnamehash, a:name)
         let self.symnamehash[a:name] = self.symuniqid
         let self.symidhash[self.symuniqid] = s:CCTreeSym.mCreate(a:name)
@@ -897,53 +1434,84 @@ function! s:xRefDb.mAddSym(name)    dict
     return self.symnamehash[a:name]
 endfunction
 
-function! s:xRefDb.mMarkXRefSyms(funcentryidx, newfuncidx) dict
+function! s:xRefMemDb.mMarkXRefSyms(funcentryidx, newfuncidx) dict
     let self.symidhash[a:funcentryidx]['c'] .= (",". a:newfuncidx)
     let self.symidhash[a:newfuncidx]['p'] .= (",". a:funcentryidx)
 endfunction
 
-function! s:xRefDb.mProcessSymbol(symbol, state) dict
-	return self.mProcessTaggedSymbol(a:symbol, a:state)
+function! s:xRefMemDb.mGetSymbolFromName(symname) dict
+    return self.symidhash[self.symnamehash[a:symname]]
 endfunction
 
-function! s:xRefDb.mProcessTaggedSymbol(symbol, state) dict
-        if a:symbol[1] == "`"
-            if a:state.curfuncidx != -1 
-                let newfuncidx = self.mAddSym(a:symbol[2:])
-                call self.mMarkXRefSyms(a:state.curfuncidx, newfuncidx)
+function! s:xRefMemDb.mGetSymbolIdFromName(symname) dict
+    return self.symnamehash[a:symname]
+endfunction
+
+function! s:xRefMemDb.mGetSymbolFromId(symid) dict
+    return self.symidhash[a:symid]
+endfunction
+
+function! s:xRefMemDb.mGetSymbolIds() dict
+    return keys(self.symidhash)
+endfunction
+
+function! s:xRefMemDb.mGetSymbolNames() dict
+    return keys(self.symnamehash)
+endfunction
+
+function! s:xRefMemDb.mGetSymbolCount() dict
+    return len(self.symnamehash)
+endfunction
+
+function! s:xRefMemDb.mTranslateSymbols(map, tkeys) dict
+    call a:map.mInitTranslator()
+    let pBar = s:ProgressBarNumeric.mCreate(len(self.symnamehash), "items")
+
+    for asym in keys(self.symnamehash)
+        let idx = self.symnamehash[asym]
+	let val = self.symidhash[idx]
+        if has_key(a:tkeys, 'n')
+            let uncmpname = a:map.mTranslateFast(asym)
+            if (asym != uncmpname)
+                "Set up new entry
+                let self.symnamehash[uncmpname] = idx
+                " free the old entry
+                call remove(self.symnamehash, asym)
+                " Set uncompressed name
+                let val.n = uncmpname
             endif
-        elseif a:symbol[1] == "$"
-            let a:state.curfuncidx = self.mAddSym(a:symbol[2:])
-        elseif a:symbol[1] == "#"
-           call self.mAddSym(a:symbol[2:])
-        elseif a:symbol[1] == "}"
-		let a:state.curfuncidx = -1
-        elseif a:symbol[1] == "~"
-            let a:state.newfileidx = self.mAddSym(a:symbol[3:])
-            call self.mMarkXRefSyms(a:state.curfileidx, a:state.newfileidx)
-        elseif a:symbol[1] == "@"
-	    if a:symbol[2] != ""
-                let a:state.curfileidx = self.mAddSym(a:symbol[2:])
-	    endif
         endif
+        if has_key(a:tkeys, 'p')
+            let val.p = a:map.mTranslateFast(val.p)
+        endif
+        if has_key(a:tkeys, 'c')
+            let val.c = a:map.mTranslateFast(val.c)
+        endif
+        call pBar.mTick(1)
+    endfor
+    call pBar.mDone()
+    call a:map.mDoneTranslator()
 endfunction
 
-
-function! s:xRefDb.mGetSymbolXRef(symname, direction) dict
-    let symentryidx = self.symnamehash[a:symname]
-    let symidslist = split(self.symidhash[symentryidx][a:direction], ",")
-    let xrefs = {}
-
-    try
-        for asymid in symidslist
-            let xrefs[self.symidhash[asymid]['n']] = 1
-        endfor
-    catch
-        echomsg 'Failed lookup for '.a:symname. ' key: '.asymid
-    endtry
-    return xrefs
+function! s:xRefMemDb.mCleanSymbols () dict
+    let pBar = s:ProgressBarNumeric.mCreate(len(self.symnamehash), "items")
+    for asym in keys(self.symnamehash)
+        let idx = self.symnamehash[asym]
+	let val = self.symidhash[idx]
+	if empty(val.p) && empty(val.c)
+	    call remove(self.symnamehash, asym)
+	    call remove(self.symidhash, idx)
+        else
+            let val.p = s:CCTreeMakeCommaListUnique(val.p)
+            let val.c = s:CCTreeMakeCommaListUnique(val.c)
+        endif
+        call pBar.mTick(1)
+    endfor
+    call pBar.mDone()
 endfunction
-
+"}}}
+"}}} End of Xref
+" {{{ Tracer
 let s:CallTree = {
                     \ 'symbol' : ""
                     \ }
@@ -963,136 +1531,113 @@ function! s:CallTree.mAddChildLink(childTree) dict
     call add(self.childlinks, a:childTree)
 endfunction
 
-function! s:xRefDb.mGetCallsForSymbol(symname, curdepth, maxdepth, 
-                                        \ direction) dict
+let s:XRefTracer = {
+                    \}
+
+function! s:XRefTracer.mCreate(xrefdb) dict
+    let xreftracer = deepcopy(s:XRefTracer)
+    let xreftracer.xrefdb = a:xrefdb
+
+    return xreftracer
+endfunction
+
+function! s:XRefTracer.mInitTracing() dict
+    call self.xrefdb.mInitState()
+endfunction
+
+function! s:XRefTracer.mDoneTracing() dict
+    call self.xrefdb.mRestoreState()
+endfunction
+
+function! s:XRefTracer.mGetSymbolIdXRef(symid, direction) dict
+    let acctreesym = self.xrefdb.mGetSymbolFromId(a:symid)
+    let symidslist = split(acctreesym[a:direction], ",")
+
+if 0
+    try
+        for asymid in symidslist
+            let xrefs[self.xrefdb.mGetSymbolFromId(asymid)['n']] = 1
+        endfor
+    catch
+        echomsg 'Failed lookup for '.a:symname. ' key: '.asymid
+    endtry
+endif
+    return symidslist
+endfunction
+
+function! s:XRefTracer.mBuildForSymbol(symid, curdepth, maxdepth, 
+                                      \ direction, pbar) dict
     if (a:curdepth > a:maxdepth) 
         return {}
     endif
 
-    if !has_key(self.symnamehash, a:symname)
+    call a:pbar.mSetDepth(a:curdepth)
+
+    " revisit
+    if !has_key(self.xrefdb.symidhash, a:symid)
         return {}            
     endif
 
-    let rtree = s:CallTree.mCreate(a:symname)
+    let rtree = s:CallTree.mCreate(self.xrefdb.mGetSymbolFromId(a:symid)['n'])
 
-    for entry in keys(self.mGetSymbolXRef(a:symname, a:direction))
+    for entry in self.mGetSymbolIdXRef(a:symid, a:direction)
+        call a:pbar.mTick(1)
         let ctree = 
-                \self.mGetCallsForSymbol(entry, a:curdepth+1, a:maxdepth, 
-                                            \a:direction)
+                \self.mBuildForSymbol(entry, a:curdepth+1, a:maxdepth, 
+                                            \a:direction, a:pbar)
         call rtree.mAddChildLink(ctree)
     endfor
     return rtree
 endfunction
-
-function! s:xRefDb.mCleanSymbols () dict
-    let pBar = s:ProgressBar.mCreate(len(self.symnamehash), "items")
-    for asym in keys(self.symnamehash)
-        let idx = self.symnamehash[asym]
-	let val = self.symidhash[idx]
-	if empty(val.p) && empty(val.c)
-		call remove(self.symnamehash, asym)
-		call remove(self.symidhash, idx)
-        else
-            let val.p = s:CCTreeMakeCommaListUnique(val.p)
-            let val.c = s:CCTreeMakeCommaListUnique(val.c)
-        endif
-        call pBar.mTick(1)
-    endfor
-    call pBar.mDone()
-endfunction
-
-function! s:xRefDb.mUncompressSymbols () dict
-    call s:CharMaps.mInitEncoding()
-    call self.mTranslateSymbols(s:CCTreeGetCscopeMaps('Uncompress'))
-    call s:CharMaps.mRestoreEncoding()
-endfunction
-
-function! s:xRefDb.mCompressSymbols () dict
-    call s:CharMaps.mInitEncoding()
-    call self.mTranslateSymbols(s:CCTreeGetCscopeMaps('Compress'))
-    let g:ghj = self.symnamehash
-    call s:CharMaps.mRestoreEncoding()
-endfunction
-
-function! s:xRefDb.mTranslateSymbols (map) dict
-    let pBar = s:ProgressBar.mCreate(len(self.symnamehash), "items")
-
-    for asym in keys(self.symnamehash)
-        let idx = self.symnamehash[asym]
-	let val = self.symidhash[idx]
-        let uncmpname = a:map.mTranslateFast(asym)
-        if (asym != uncmpname)
-            "Set up new entry
-            let self.symnamehash[uncmpname] = idx
-            " free the old entry
-            call remove(self.symnamehash, asym)
-            " Set uncompressed name
-            let val.n = uncmpname
-        endif
-        call pBar.mTick(1)
-    endfor
-    call pBar.mDone()
-endfunction
 " }}}
-" {{{ Cscope DB handling
 
-let s:CscopeDbProcessingState = {
+" {{{ Cscope Reader
+
+
+let s:CscopeDbRdrState = {
     \'curfuncidx': -1,
     \'newfuncidx': -1,
     \'curfileidx': -1,
     \'newfileidx': -1
     \ }
 
-function! s:CscopeDbProcessingState.mCreate() dict
-    return deepcopy(s:CscopeDbProcessingState)
+function! s:CscopeDbRdrState.mCreate() dict
+    return deepcopy(s:CscopeDbRdrState)
 endfunction
 
-let s:CscopeDb = {
-        \ 'fDBName' : '',
-        \ 'compressed' : 0
-        \ }
+let s:CscopeDbRdr = { 
+                    \ 'class': 'Cscope',
+                    \ 'headerLines' : 1,
+                    \ 'compressed' : 0,
+                    \ 'opts': ['v:val =~ "^\t[#`$}@\~]"'],
+                    \ 'perl_opts': '^\t[\`\#\$\}\@\~]',
+                    \ 'mapPreKeys': {'n':''},
+                    \ 'mapPostKeys': {'n':''}
+                    \}
 
-function! s:CscopeDb.mCreate(fname) dict
-    let csdb = deepcopy(s:CscopeDb)
-    unlet csdb.mCreate
-
-    let csdb.fDBName = a:fname
-    if !filereadable(a:fname) 
-        return s:CCTreeRC.Error
-    endif
-
-    return csdb
-endfunction
-
-function! s:CscopeDb.mProcessFileIntoXRefDb(vDbFile, xrefdb, filtercmds)
-    let csState = s:CscopeDbProcessingState.mCreate()
-    while 1 == 1
-	if a:vDbFile.mRead() == -1
-	    break
-	endif
-	let idxstr = '('.a:vDbFile.currentSplitIdx.'/'.a:vDbFile.totSplits.') '
-	call s:StatusLine.mSetInfo('Reading database chunk '.idxstr)
-	" Filter-out lines that doesn't have relevant information
-	let plist = s:CCTreeUtils.mFilter(a:vDbFile.lines, a:filtercmds)
-	let pBar = s:ProgressBar.mCreate(len(plist), "items")
-	call s:StatusLine.mSetInfo('Analyzing database chunk '.idxstr)
-	call self.mProcessListIntoXrefDb(plist, csState, a:xrefdb, pBar)
-	call pBar.mDone()
-    endwhile
-endfunction
-
-function! s:CscopeDb.mProcessListIntoXrefDb(symbols, state, xrefdb, pbar)
-    for a in a:symbols
-        call a:pbar.mTick(1)
-        call a:xrefdb.mProcessSymbol(a, a:state)
-    endfor
-endfunction
-
-function! s:CscopeDb.mParseDbHeader() dict
-    let dbHeader = readfile(self.fDBName,'', 1)
+function! s:CscopeDbRdr.mCreate(fname) dict
+    let csdbrdr = deepcopy(s:CscopeDbRdr)
+    unlet csdbrdr.mCreate
     
-    if dbHeader[0] =~ "cscope"
-        if (dbHeader[0] !~ "cscope.*\-c")
+    return csdbrdr
+endfunction
+
+function! s:CscopeDbRdr.mProcessingStateInit() dict
+    let self.iState = s:CscopeDbRdrState.mCreate()
+endfunction
+
+function! s:CscopeDbRdr.mProcessingStateDone() dict
+    " discard state
+    unlet self.iState
+endfunction
+
+function! s:CscopeDbRdr.mReadLinesFromFile(vDbFile, filtercmds) dict
+    return s:CCTreeUtils.mFilter(a:vDbFile.lines, a:filtercmds)
+endfunction
+
+function! s:CscopeDbRdr.mParseDbHeader(dbHeader) dict
+    if a:dbHeader[0] =~ "cscope"
+        if (a:dbHeader[0] !~ "cscope.*\-c")
             let self.compressed =  s:CCTreeRC.True
         else
             let self.compressed =  s:CCTreeRC.False
@@ -1102,77 +1647,77 @@ function! s:CscopeDb.mParseDbHeader() dict
     return s:CCTreeRC.Error
 endfunction
 
-
-if has('perl') && g:CCTreeUsePerl == 1
-" Perl function
-function! s:CscopeDb.mLoadFileIntoXRefDb(xRefDb)  dict
-    let csState = s:CscopeDbProcessingState.mCreate()
-    call s:StatusLine.mSetInfo('(PERL) Loading database')
-    let pBar = s:ProgressBar.mCreate(getfsize(self.fDBName), "bytes")
-perl << PERL_EOF
-    #use strict;
-    #use warnings FATAL => 'all';
-    #use warnings NONFATAL => 'redefine';
-
-    my $filebytes = 0;
-    my $symchar = '';
-    my $symbol = '';
- 
-    open (CSCOPEDB, VIM::Eval("self.fDBName")) or die "File trouble!";
-
-    while (<CSCOPEDB>) {
-	$filebytes += length($_);
-        chomp($_);
-
-	$symchar = "";
-	($symchar, $symbol) = /^\t(.)(.*)/;
-	if ($symchar !~ "^[\`\#\$\}\@\~]") {
-		next;	
-	}
-
-        VIM::DoCommand("call pBar.mTick(".$filebytes.")");
-        $filebytes = 0;
-        VIM::DoCommand("call a:xRefDb.mProcessSymbol('".$_."', csState)");
-    }
-    VIM::DoCommand("call pBar.mDone()");
-    close(CSCOPEDB);
-PERL_EOF
+function! s:CscopeDbRdr.mRequirePreProcessing() dict
+    return (self.compressed == 1)? s:CCTreeRC.True : s:CCTreeRC.False
 endfunction
 
-else
+function! s:CscopeDbRdr.mRequirePostProcessing() dict
+    return (self.compressed == 1)? s:CCTreeRC.True : s:CCTreeRC.False
+endfunction
 
-" Native Vim function
-function! s:CscopeDb.mLoadFileIntoXRefDb(xRefDb) dict
-	let vDbFile = s:vFile.mCreate(self.fDBName, "r")
-        if vDbFile.valid == 0
-            return -1
+function! s:CscopeDbRdr.mRequireCleanup() dict
+    " Clean-up all symbols [always]
+    return s:CCTreeRC.True
+endfunction
+
+function! s:CscopeDbRdr.mGetPreProcessingMaps() dict
+    return s:CCTreeGetCscopeMaps('Compress')
+endfunction
+
+function! s:CscopeDbRdr.mGetPostProcessingMaps() dict
+    return s:CCTreeGetCscopeMaps('Uncompress')
+endfunction
+
+function! s:CscopeDbRdr.mProcessSymbol(xrefdb, symbol) dict
+	return self.mProcessTaggedSymbol(a:xrefdb, a:symbol)
+endfunction
+
+function! s:CscopeDbRdr.mProcessTaggedSymbol(xrefdb, symbol) dict
+        if a:symbol[1] == "`"
+            if self.iState.curfuncidx != -1 
+                let newfuncidx = a:xrefdb.mAddSym(a:symbol[2:])
+                call a:xrefdb.mMarkXRefSyms(self.iState.curfuncidx,
+                                            \ newfuncidx)
+            endif
+        elseif a:symbol[1] == "$"
+            let self.iState.curfuncidx = a:xrefdb.mAddSym(a:symbol[2:])
+        elseif a:symbol[1] == "#"
+           call a:xrefdb.mAddSym(a:symbol[2:])
+        elseif a:symbol[1] == "}"
+	   let self.iState.curfuncidx = -1
+        elseif a:symbol[1] == "~"
+            let self.iState.newfileidx = a:xrefdb.mAddSym(a:symbol[3:])
+            call a:xrefdb.mMarkXRefSyms(self.iState.curfileidx,
+                                            \ self.iState.newfileidx)
+        elseif a:symbol[1] == "@"
+	    if a:symbol[2] != ""
+                let self.iState.curfileidx = 
+                                    \a:xrefdb.mAddSym(a:symbol[2:])
+	    endif
         endif
-	if vDbFile.mIsLargeFile() == 1
-		call s:StatusLine.mSetExtraInfo('Cscope DB '
-			\.' >'.g:CCTreeDbFileMaxSize .' bytes. Splitting '.
-			\'into smaller chunks... (this may take some time)')
-	endif
-	try
-		if vDbFile.mOpen() == 0
-			call self.mProcessFileIntoXRefDb(vDbFile,
-                                                \ a:xRefDb,
-                                                \ ['v:val =~ "^\t[#`$}@\~]"'])
-		endif
-	finally
-		call vDbFile.mClose()
-	endtry
 endfunction
-
-endif
 
 " }}}
 " {{{ CCTree helper library
 let s:CCTreeUtils = {}
 
+function! s:CCTreeUtils.mDetectDB(class)
+    if a:class == s:cctreexref
+        if filereadable(g:CCTreeDb)
+        return g:CCTreeDb
+        endif
+    elseif a:class == s:cscopeid
+        if filereadable(g:CCTreeCscopeDb)
+            return g:CCTreeCscopeDb
+        endif
+    endif
+    return ''
+endfunction
+
 function! s:CCTreeUtils.mFilter(lines, filtercmds) dict
 	let retlst = []
 	let progr = len(a:lines)/100
-	let pBar = s:ProgressBar.mCreate(len(a:lines), "items")
+	let pBar = s:ProgressBarNumeric.mCreate(len(a:lines), "items")
 	while len(a:lines) > 0
 		if progr <= len(a:lines)
 			let tmplist = remove(a:lines, 0, progr)
@@ -1191,13 +1736,13 @@ endfunction
 
 function! s:CCTreeUtils.mWarningMsg(msg) dict
     echohl WarningMsg
-    echo s:pluginname. ": ". a:msg
+    echomsg s:pluginname. ": ". a:msg
     echohl None
 endfunction
 
 function! s:CCTreeUtils.mInfoMsg(msg) dict
     echohl Title
-    echo s:pluginname. ": ". a:msg
+    echomsg s:pluginname. ": ". a:msg
     echohl None
 endfunction
 
@@ -1207,6 +1752,13 @@ endfunction
 
 " }}}
 " {{{  CCTree DB management
+let s:CCTreeXrefDb = {
+                     \  'type': '',
+                     \  'fname' : '',
+                     \  'fsize' : 0,
+                     \  'fdate' : 0
+                     \}
+
 let s:CCTreeDBList = {
                         \'loadedDBs' : []
                         \ }
@@ -1240,33 +1792,41 @@ function! s:CCTreeDBList.mIsEmpty() dict
 endfunction
 
 " Load the cscope db into the global cctree xref db
-function! s:CCTreeDBList.mCreateCscopeDb(dbName) dict
-    if a:dbName == ''
-        let dbUser = s:CCTreeUI.mInputDBName(s:CCTreeUI.mDetectDB())
-    else
-        let dbUser = a:dbName
+function! s:CCTreeDBList.mCreateDbLoaderAndReader(dbName, class) dict
+    let dbUser = s:CCTreeCmdLine.mInputDBName('Load', a:dbName, a:class)
+    if dbUser == ''
+        call s:CCTreeUtils.mWarningMsg('Filename required')
+        "User cancel, do nothing
+        return
     endif
-    "User cancel, do nothing
      
-    " Create new cscope DB object
-    let csDb = s:CscopeDb.mCreate(dbUser)
+    " Create generic Db loader object
+    let gDbLdr = s:GenericDbLdr.mCreate(dbUser)
     
-    if type(csDb) != type({})
-        call s:CCTreeUtils.mWarningMsg('Cscope database ' . a:dbName . 
+    if type(gDbLdr) != type({})
+        call s:CCTreeUtils.mWarningMsg(a:class.' database ' . a:dbName . 
             \ ' not found.')
         return s:CCTreeRC.Error
     endif
 
-    if csDb.mParseDbHeader() == s:CCTreeRC.Error
-        call s:CCTreeUtils.mWarningMsg('Cscope database ' . a:dbName . 
+    " Create new DB reader object
+    if a:class == s:cscopeid
+        let gDbRdr = s:CscopeDbRdr.mCreate(dbUser)
+    elseif a:class == s:cctreexref
+        let gDbRdr = s:CCTreeTagDbRdr.mCreate(dbUser)
+    else
+        return s:CCTreeRC.Error
+    endif
+
+    if gDbLdr.mParseDbHeader(gDbRdr) == s:CCTreeRC.Error
+        call s:CCTreeUtils.mWarningMsg(gDbRdr.class.' database ' . a:dbName . 
             \ ' format is not parseable.')
         return s:CCTreeRC.Error
     endif
 
-    return csDb
+    return {'loader': gDbLdr, 'reader': gDbRdr}
 endfunction
             
-
 function! s:CCTreeDBList.mAddDbToList(dbName)
     let dbFullPath = simplify(getcwd().'/'.a:dbName)." ".getfsize(a:dbName).
                         \ " bytes ".strftime("%c", getftime(a:dbName))
@@ -1274,56 +1834,63 @@ function! s:CCTreeDBList.mAddDbToList(dbName)
 endfunction
 
 " Merge the cscope db into the global cctree xref db
-function! s:CCTreeDBList.mMerge(dbName, xRefDb)
-    let csDb = self.mCreateCscopeDb(a:dbName)
+function! s:CCTreeDBList.mMerge(dbName, xRefDb, class)
+    " Create db loader, reader
+    let gObjs = self.mCreateDbLoaderAndReader(a:dbName, a:class)
 
-    if type(csDb) == type({})
+    if type(gObjs) == type({})
         " if Db is compressed, then we need to compress our symbols first
-        if self.mLoadCscopeDB(csDb, a:xRefDb, 
-                                \ csDb.compressed) != s:CCTreeRC.Error
-            call self.mAddDbToList(csDb.fDBName)
+        if self.mLoadDB(gObjs.loader, a:xRefDb, 
+                            \ gObjs.reader) != s:CCTreeRC.Error
+            call self.mAddDbToList(gObjs.loader.fDBName)
         endif
         " Load will auto decompress the symbols
     endif
 endfunction
 
 " Load the cscope db into the global cctree xref db
-function! s:CCTreeDBList.mAddNew(dbName, xRefDb)
-    let csDb = self.mCreateCscopeDb(a:dbName)
-    if type(csDb) == type({})
-        if self.mLoadCscopeDB(csDb, a:xRefDb, 
-                            \ s:CCTreeRC.False) != s:CCTreeRC.Error
-            call self.mAddDbToList(csDb.fDBName)
+function! s:CCTreeDBList.mAddNew(dbName, xRefDb, class)
+    " Create db loader, reader
+    let gObjs = self.mCreateDbLoaderAndReader(a:dbName, a:class)
+
+    if type(gObjs) == type({})
+        if self.mLoadDB(gObjs.loader, a:xRefDb, 
+                            \ gObjs.reader) != s:CCTreeRC.Error
+            call self.mAddDbToList(gObjs.loader.fDBName)
         endif
     endif
 endfunction
 
-function! s:CCTreeDBList.mLoadCscopeDB(csDb, xRefDb, precompress)
+function! s:CCTreeDBList.mLoadDB(gDbLdr, xRefDb, gRdr)
     let rc = s:CCTreeRC.Success
     try
         let swatch = s:StopWatch.mCreate()
         call s:StatusLine.mInit()
         " if compression, then we need to compress our symbols first
-        if a:precompress == s:CCTreeRC.True
-            call s:StatusLine.mSetInfo('Preparing existing symbols')
-            call a:xRefDb.mCompressSymbols()
+        if a:gRdr.mRequirePreProcessing() == s:CCTreeRC.True
+            call s:StatusLine.mSetInfo('Pre-processing existing symbols')
+            call a:xRefDb.mTranslateSymbols(a:gRdr.mGetPreProcessingMaps(), 
+                                            \ a:gRdr.mapPreKeys)
         endif
         call s:StatusLine.mSetInfo('Loading database')
-        call a:csDb.mLoadFileIntoXRefDb(a:xRefDb)   
-        call s:StatusLine.mSetInfo('Database XRef clean-up')
-        call a:xRefDb.mCleanSymbols()
-        if a:csDb.compressed == s:CCTreeRC.True
-            call s:StatusLine.mSetInfo('Decompressing database')
-            call a:xRefDb.mUncompressSymbols()
+        call a:gDbLdr.mLoadFileIntoXRefDb(a:xRefDb, a:gRdr)   
+        if a:gRdr.mRequireCleanup() == s:CCTreeRC.True
+            call s:StatusLine.mSetInfo('Symbol clean-up')
+            call a:xRefDb.mCleanSymbols()
         endif
-        call garbagecollect()
-        
+        if a:gRdr.mRequirePostProcessing() == s:CCTreeRC.True
+            call s:StatusLine.mSetInfo('Post-processing loaded symbols')
+            call a:xRefDb.mTranslateSymbols(a:gRdr.mGetPostProcessingMaps(),
+                                                \ a:gRdr.mapPostKeys)
+        endif
         call swatch.mSnapElapsed()
+        " restore normalcy
+        call garbagecollect()
+        redraw
 
         let msg = "Done loading database. xRef Symbol Count: "
                                      \.len(a:xRefDb.symnamehash)
                                      \.". Time taken: ".swatch.mGetText()." secs"
-        "echomsg s:pluginname.":". msg
         call s:CCTreeUtils.mInfoMsg(msg)
 
     catch /^Vim:Interrupt$/	" catch interrupts (CTRL-C)
@@ -1338,20 +1905,10 @@ endfunction
 " {{{ UI Input related
 let s:CCTreeUI = {}
 
-function! s:CCTreeUI.mDetectDB()
-    "if filereadable(g:CCTreeDb)
-    "return g:CCTreeDb
-    "endif
-    if filereadable(g:CCTreeCscopeDb)
-	return g:CCTreeCscopeDb
-    endif
 
-    return ''
-endfunction
-
-function! s:CCTreeUI.mInputDBName(dbName)
+function! s:CCTreeUI.mInputDBName(dbName, class, action)
     let dbUser = a:dbName
-    let dbUser = input('Enter database (cscope): ', a:dbName, 'file')
+    let dbUser = input(a:action. ' database ('. a:class. '): ', a:dbName, 'file')
     return dbUser
 endfunction
 " }}}
@@ -1706,40 +2263,65 @@ endfunction
 let s:CCTreeDisplay = {}
 
 function! s:CCTreeDisplay.mPopulateTreeInCurrentBuffer(dtree)
+    let linelist = []
     for aentry in a:dtree.entries
         let aline = a:dtree.lvlNotationTxt[aentry.level]. aentry.symbol
         let len = s:Utils.mStrlenEx(aline)
-        "let b:maxwindowlen = max([strlen(aline)+1, b:maxwindowlen])
         let b:maxwindowlen = max([len+1, b:maxwindowlen])
-        call setline(".", aline)
-        normal! o
+        call add(linelist, aline)
     endfor
-    silent $d
+    call setline(".", linelist)
 endfunction
 
 
 
 " }}}
-" {{{ CCTree commands
-let s:CCTreeCmd = {}
+" {{{ CCTree command line interface
+let s:CCTreeCmdLine = {}
 
 " Unload current db's and load new one
 " There is no selective unloading
-function! s:CCTreeCmd.mLoadDB(db_name) dict
+function! s:CCTreeCmdLine.mLoadDB(db_name, class) dict
+        call s:CCTreeGlobals.mSetupEncodingChangeAutoCmd(0)
         call s:CCTreeGlobals.mUnLoadDBs()
-	call s:CCTreeGlobals.DbList.mAddNew(a:db_name, s:CCTreeGlobals.XRefDb)
+	call s:CCTreeGlobals.DbList.mAddNew(a:db_name, 
+                                \ s:CCTreeGlobals.XRefDb, a:class)
+        call s:CCTreeGlobals.mSetupAutoCmds()
+endfunction
+
+function! s:CCTreeCmdLine.mInputDBName(action, dbName, class) dict
+    if a:dbName == ''
+        let dbUser = s:CCTreeUI.mInputDBName(
+                            \ s:CCTreeUtils.mDetectDB(a:class), 
+                            \ a:class, a:action)
+    else
+        let dbUser = a:dbName
+    endif
+    return dbUser
+endfunction
+    
+function! s:CCTreeCmdLine.mSaveDB(dbName, class) dict
+    let dbUser = self.mInputDBName('Save', a:dbName, a:class)
+    if dbUser == ''
+        call s:CCTreeUtils.mWarningMsg('Filename required')
+        return
+    endif
+    call s:CCTreeGlobals.Window.mClose()
+    call s:CCTreeGlobals.mSetupEncodingChangeAutoCmd(0)
+    call s:CCTreeGlobals.mWriteXRefDbToFile(dbUser)
+    call s:CCTreeGlobals.mSetupAutoCmds()
+    call s:CCTreeGlobals.mUpdateForCurrentSymbol()
 endfunction
 
 " Merge current db with new one
-function! s:CCTreeCmd.mMergeDB(db_name) dict
+function! s:CCTreeCmdLine.mMergeDB(db_name, class) dict
         "call s:CCTreeGlobals.Window.mClose()
-	call s:CCTreeGlobals.DbList.mMerge(a:db_name, s:CCTreeGlobals.XRefDb)
+	call s:CCTreeGlobals.DbList.mMerge(a:db_name, s:CCTreeGlobals.XRefDb, a:class)
 endfunction
 
 
 " }}}
 " {{{ CCTree Buffer mappings
-
 function! s:CCTreeWindowGetHiKeyword()
     let keyw = expand("<cword>")
     let keyf = expand("<cfile>")
@@ -1937,11 +2519,10 @@ function! s:CCTreePreviewState.mStore(symbol, direction)
     let self.direction = a:direction
 endfunction
 " }}}
-
 " {{{ CCTree global objects
 
 let s:CCTreeGlobals = {
-                        \ 'XRefDb': s:xRefDb.mCreate(),
+                        \ 'XRefDb': s:xRefMemDb.mCreate(),
                         \ 'DbList': s:CCTreeDBList.mCreate(),
                         \ 'PreviewState': s:CCTreePreviewState.mCreate(),
                         \ 'Window': s:CCTreeWindow.mCreate()
@@ -1974,16 +2555,19 @@ function! s:CCTreeGlobals.mToggle(opt) dict
 endfunction
 
 function! s:CCTreeGlobals.mGetSymNames() dict
-    return keys(self.XRefDb.symnamehash)
+    return self.XRefDb.mGetSymbolNames()
 endfunction
 
-function! s:CCTreeGlobals.mHasSym(name) dict
-    return has_key(self.XRefDb.symnamehash, a:name)
-endfunction
 
 function! s:CCTreeGlobals.mGetCallsForSymbol(name, depth, direction) dict
-    return self.XRefDb.mGetCallsForSymbol(a:name, 
-                      \ a:depth, self.PreviewState.depth, a:direction)
+    let pbar = s:ProgressBarRoll.mCreate(['-','\','|','/'], '*')
+    call s:StatusLine.mSetInfo('Building ')
+    " Create tracer
+    let xtracer = s:XRefTracer.mCreate(self.XRefDb)
+    let symid = self.XRefDb.mGetSymbolIdFromName(a:name)
+    let xrefs = xtracer.mBuildForSymbol(symid, 
+                      \ a:depth, self.PreviewState.depth, a:direction, pbar)
+    return xrefs
 endfunction
 
 function! s:CCTreeGlobals.mShowLoadedDBs() dict
@@ -1992,7 +2576,7 @@ endfunction
 
 function! s:CCTreeGlobals.mUnLoadDBs() dict
     call s:CCTreeGlobals.Window.mClose()
-    call s:CCTreeGlobals.XRefDb.mDestroy()
+    call s:CCTreeGlobals.XRefDb.mClear()
     call s:CCTreeGlobals.DbList.mClearAll()
 endfunction
 
@@ -2007,11 +2591,18 @@ function! s:CCTreeGlobals.mUpdateForCurrentSymbol() dict
         return s:CCTreeRC.Error
     endif
     if self.PreviewState.keyword != ''
+    let swatch = s:StopWatch.mCreate()
     " Move this function to globals? 
-        let atree = self.mGetCallsForSymbol(self.PreviewState.keyword, 
-                        \ 0, 
-                        \ self.PreviewState.direction)
-        call self.Window.mDisplayTree(atree, self.PreviewState.direction)
+    call s:StatusLine.mInit()
+    let atree = self.mGetCallsForSymbol(self.PreviewState.keyword, 
+                    \ 0, 
+                    \ self.PreviewState.direction)
+    call s:StatusLine.mRestore()
+    "call s:StatusLine.mSetInfo('Populating tree (Please wait...)')
+    call self.Window.mDisplayTree(atree, self.PreviewState.direction)
+
+    call swatch.mSnapElapsed()
+    "echomsg "Done loading tree.Time taken: ".swatch.mGetText()." secs"
     endif
 endfunction
 
@@ -2058,16 +2649,30 @@ function! s:CCTreeGlobals.mDisplayToggle() dict
     call self.Window.mDisplayToggle()
 endfunction
 
-function! s:CCTreeGlobals.mSetupDynamicCallTreeHiLightEvent() dict
+function! s:CCTreeGlobals.mSetupAutoCmds() dict
     augroup CCTreeGeneral
         au!
-        if g:CCTreeHilightCallTree == 1
-            exec 'autocmd CursorMoved '.s:windowtitle.' call s:CCTreeGlobals.mCursorHoldHandleEvent()'
-        endif
-        autocmd EncodingChanged * call s:CCTreeGlobals.mEncodingChangedHandleEvent()
     augroup END
+    call s:CCTreeGlobals.mSetupCursorMoveAutoCmd(g:CCTreeHilightCallTree)
+    call s:CCTreeGlobals.mSetupEncodingChangeAutoCmd(g:CCTreeUseUTF8Symbols)
 endfunction
 
+function! s:CCTreeGlobals.mSetupCursorMoveAutoCmd(enable) dict
+        if a:enable == 1
+            exec 'autocmd CCTreeGeneral CursorMoved '.s:windowtitle.' call s:CCTreeGlobals.mCursorHoldHandleEvent()'
+        else
+            exec 'autocmd! CCTreeGeneral CursorMoved '.s:windowtitle
+        endif
+endfunction
+
+function! s:CCTreeGlobals.mSetupEncodingChangeAutoCmd(enable) dict
+        return
+        if a:enable == 1
+            autocmd CCTreeGeneral EncodingChanged * call s:CCTreeGlobals.mEncodingChangedHandleEvent()
+        else
+            autocmd! CCTreeGeneral EncodingChanged * 
+        endif
+endfunction
 
 function! s:CCTreeGlobals.mPreviewSave() dict
     let rtitle = s:CCTreeGlobals.Window.mBuildStatusLine(
@@ -2084,6 +2689,33 @@ function! s:CCTreeGlobals.mPreviewSave() dict
     endif
 endfunction
 
+function! s:CCTreeGlobals.mWriteXRefDbToFile(fname) dict
+    " create db serializer and writer
+    let gDbSz = s:GenericDbSerializer.mCreate(self.XRefDb)
+    let gDbWriter = s:CCTreeTagDbWriter.mCreate(s:CCTreeGetXRefDbMaps('Compress'))
+    call gDbSz.mWriteXRefDbToFile(a:fname, gDbWriter)
+endfunction
+
+function! s:CCTreeGlobals.mReadToXRefDb(fname) dict
+    call s:StatusLine.mInit()
+    call s:StatusLine.mSetInfo('Reading XRefDb')
+    let vDbFile = s:vFile.mCreate(a:fname, "r")
+    if vDbFile.mIsLargeFile() == 1
+            call s:StatusLine.mSetExtraInfo('Xref DB '
+                    \.' >'.g:CCTreeDbFileMaxSize .' bytes. Splitting '.
+                    \'into smaller chunks... (this may take some time)')
+    endif
+    try
+        if vDbFile.mOpen() == 0
+            call s:TagFile.mReadToXRefDb(self.XRefDb, vDbFile)
+        endif
+    finally
+        call vDbFile.mClose()
+        call s:StatusLine.mRestore()
+        call self.DbList.mAddDbToList(a:fname)
+    endtry
+endfunction
+
 function! s:CCTreeGlobals.mCursorHoldHandleEvent() dict
     if self.Window.mGetKeywordAtCursor() != s:CCTreeRC.Error
        setlocal modifiable
@@ -2096,18 +2728,15 @@ endfunction
 
 function! s:CCTreeGlobals.mEncodingChangedHandleEvent() dict
     let self.Window.treeMarkers = s:CCTreeMarkers.mCreate()
-    if s:CCTreeGlobals.Window.mIsOpen() == s:CCTreeRC.True
-        call s:CCTreeGlobals.Window.mClose()
-        call s:CCTreeGlobals.mUpdateForCurrentSymbol()
+    if self.Window.mIsOpen() == s:CCTreeRC.True
+        call self.Window.mClose()
+        call self.mUpdateForCurrentSymbol()
     endif
 endfunction
 
-function! s:CCTreeCursorHoldHandleEvent()
-    call s:CCTreeGlobals.mCursorHoldHandleEvent()
-endfunction
 
 function! s:CCTreeGlobals.mInit() dict
-    call self.mSetupDynamicCallTreeHiLightEvent()
+    call self.mSetupAutoCmds()
 endfunction
 
 " }}}
@@ -2118,7 +2747,7 @@ function! s:CCTreeSetUseCallTreeHiLights(val)
     else
         let g:CCTreeHilightCallTree = a:val
     endif
-    call s:CCTreeGlobals.mSetupDynamicCallTreeHiLightEvent()
+    call s:CCTreeGlobals.mSetupAutoCmds()
 endfunction
 
 function! s:CCTreeSetUseUtf8Symbols(val) 
@@ -2236,8 +2865,10 @@ endfunction
 
 " }}}
 " {{{ Define commands
-command! -nargs=? -complete=file CCTreeLoadDB  call s:CCTreeCmd.mLoadDB(<q-args>)
-command! -nargs=? -complete=file CCTreeAppendDB  call s:CCTreeCmd.mMergeDB(<q-args>)
+command! -nargs=? -complete=file CCTreeLoadDB  call s:CCTreeCmdLine.mLoadDB(<q-args>, s:cscopeid)
+command! -nargs=? -complete=file CCTreeLoadXRefDB  call s:CCTreeCmdLine.mLoadDB(<q-args>, s:cctreexref)
+command! -nargs=? -complete=file CCTreeSaveXRefDB  call s:CCTreeCmdLine.mSaveDB(<q-args>, s:cctreexref)
+command! -nargs=? -complete=file CCTreeAppendDB  call s:CCTreeCmdLine.mMergeDB(<q-args>, s:cscopeid)
 command! -nargs=0 CCTreeUnLoadDB               call s:CCTreeGlobals.mUnLoadDBs()
 command! -nargs=0 CCTreeShowLoadedDBs          call s:CCTreeGlobals.mShowLoadedDBs()
 command! -nargs=? -complete=customlist,s:CCTreeCompleteKwd
@@ -2263,4 +2894,3 @@ let &cpoptions = s:cpo_save
 unlet s:cpo_save
 " vim: ts=8 sw=4 sts=4 et foldenable foldmethod=marker foldcolumn=1
 " }}}
-
