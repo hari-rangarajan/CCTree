@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: March 21, 2011
-"      Version: 1.21 
+"  Last Change: March 29, 2011
+"      Version: 1.26 
 "
 "=============================================================================
 " 
@@ -262,6 +262,12 @@
 "                 in incorrectly identified function blocks, etc.
 "  }}}
 "  {{{ History:
+"           Version 1.26: March 28, 2011
+"                 1. Fix macro cross-referencing limitation
+"                 2. Correct native xref file format
+"           Version 1.21: March 21, 2011
+"                 1. Support serialization of loaded 
+"                           cscope databases (for faster loading)
 "           Version 1.07: March 09, 2011
 "                 1. Fix new keymaps incorrectly applied to buffer
 "                 2. CCTreeOptsToggle command for toggling options
@@ -654,17 +660,17 @@ function! s:StatusLine.mRestore() dict
     let self.statusextra = ''
 
     let &l:statusline = s:StatusLine.savedStatusLine
-    redrawstatus!
+    redrawstatus
 endfunction
 
 function! s:StatusLine.mSetInfo(msg) dict
     let s:StatusLine.currentstatus = a:msg
-    redrawstatus!
+    redrawstatus
 endfunction
 
 function! s:StatusLine.mSetExtraInfo(msg) dict
     let s:StatusLine.statusextra = a:msg
-    redrawstatus!
+    redrawstatus
 endfunction
 
 function! CCTreeStatusLine() 
@@ -1166,6 +1172,8 @@ function! s:GenericDbLdr.mReadFileIntoXRefDb(vDbFile, xrefdb, gRdr)
 	call s:StatusLine.mSetInfo('Analyzing database chunk '.idxstr)
 	call self.mProcessListIntoXrefDb(plist, a:gRdr, a:xrefdb, pBar)
 	call pBar.mDone()
+        " clean-up memory
+        call garbagecollect()
     endwhile
     call a:gRdr.mProcessingStateDone()
 endfunction
@@ -1337,7 +1345,7 @@ function! s:CCTreeTagDbWriter.mBuildHeader() dict
     let hdr = []
     call add(hdr, "!_TAG_FILE_FORMAT\t2	/extended format; --format=1 will not append ;\" to lines/")
     call add(hdr, "!_TAG_FILE_SORTED\t1	/0=unsorted, 1=sorted, 2=foldcase/")
-    call add(hdr, "!_TAG_PROGRAM_NAME\tCCTree (Vim plugin)//")
+    call add(hdr, "!_TAG_PROGRAM_NAME\t\tCCTree (Vim plugin)//")
     call add(hdr, "!_TAG_PROGRAM_URL\thttp://vim.sourceforge.net/scripts/script.php?script_id=2368\t/site/")
     return hdr
 endfunction
@@ -1435,8 +1443,8 @@ function! s:xRefMemDb.mAddSym(name)    dict
 endfunction
 
 function! s:xRefMemDb.mMarkXRefSyms(funcentryidx, newfuncidx) dict
-    let self.symidhash[a:funcentryidx]['c'] .= (",". a:newfuncidx)
-    let self.symidhash[a:newfuncidx]['p'] .= (",". a:funcentryidx)
+        let self.symidhash[a:funcentryidx]['c'] .= (",". a:newfuncidx)
+        let self.symidhash[a:newfuncidx]['p'] .= (",". a:funcentryidx)
 endfunction
 
 function! s:xRefMemDb.mGetSymbolFromName(symname) dict
@@ -1572,13 +1580,13 @@ function! s:XRefTracer.mBuildForSymbol(symid, curdepth, maxdepth,
     endif
 
     call a:pbar.mSetDepth(a:curdepth)
-
+    let asym = self.xrefdb.mGetSymbolFromId(a:symid)
     " revisit
-    if !has_key(self.xrefdb.symidhash, a:symid)
+    if empty(asym)
         return {}            
     endif
 
-    let rtree = s:CallTree.mCreate(self.xrefdb.mGetSymbolFromId(a:symid)['n'])
+    let rtree = s:CallTree.mCreate(asym['n'])
 
     for entry in self.mGetSymbolIdXRef(a:symid, a:direction)
         call a:pbar.mTick(1)
@@ -1596,9 +1604,8 @@ endfunction
 
 let s:CscopeDbRdrState = {
     \'curfuncidx': -1,
-    \'newfuncidx': -1,
     \'curfileidx': -1,
-    \'newfileidx': -1
+    \'curmacroidx': -1,
     \ }
 
 function! s:CscopeDbRdrState.mCreate() dict
@@ -1609,8 +1616,8 @@ let s:CscopeDbRdr = {
                     \ 'class': 'Cscope',
                     \ 'headerLines' : 1,
                     \ 'compressed' : 0,
-                    \ 'opts': ['v:val =~ "^\t[#`$}@\~]"'],
-                    \ 'perl_opts': '^\t[\`\#\$\}\@\~]',
+                    \ 'opts': ['v:val =~ "^\t[#`$}@\~\)]"'],
+                    \ 'perl_opts': '^\t[\`\#\$\}\@\~\)]',
                     \ 'mapPreKeys': {'n':''},
                     \ 'mapPostKeys': {'n':''}
                     \}
@@ -1673,22 +1680,30 @@ function! s:CscopeDbRdr.mProcessSymbol(xrefdb, symbol) dict
 endfunction
 
 function! s:CscopeDbRdr.mProcessTaggedSymbol(xrefdb, symbol) dict
-        if a:symbol[1] == "`"
-            if self.iState.curfuncidx != -1 
-                let newfuncidx = a:xrefdb.mAddSym(a:symbol[2:])
+        if self.iState.curmacroidx != -1
+            if a:symbol[1] == "`"
+                call a:xrefdb.mMarkXRefSyms(self.iState.curmacroidx,
+                                \ a:xrefdb.mAddSym(a:symbol[2:]))
+            elseif a:symbol[1] == ')'
+                let self.iState.curmacroidx = -1
+            endif
+        elseif self.iState.curfuncidx != -1
+            " inside function
+            if a:symbol[1] == "`"
                 call a:xrefdb.mMarkXRefSyms(self.iState.curfuncidx,
-                                            \ newfuncidx)
+                                \ a:xrefdb.mAddSym(a:symbol[2:]))
+            elseif a:symbol[1] == "}"
+               let self.iState.curfuncidx = -1
+            elseif a:symbol[1] == "#"
+                let self.iState.curmacroidx = a:xrefdb.mAddSym(a:symbol[2:])
             endif
         elseif a:symbol[1] == "$"
             let self.iState.curfuncidx = a:xrefdb.mAddSym(a:symbol[2:])
         elseif a:symbol[1] == "#"
-           call a:xrefdb.mAddSym(a:symbol[2:])
-        elseif a:symbol[1] == "}"
-	   let self.iState.curfuncidx = -1
+           let self.iState.curmacroidx = a:xrefdb.mAddSym(a:symbol[2:])
         elseif a:symbol[1] == "~"
-            let self.iState.newfileidx = a:xrefdb.mAddSym(a:symbol[3:])
             call a:xrefdb.mMarkXRefSyms(self.iState.curfileidx,
-                                            \ self.iState.newfileidx)
+                                       \a:xrefdb.mAddSym(a:symbol[3:]))
         elseif a:symbol[1] == "@"
 	    if a:symbol[2] != ""
                 let self.iState.curfileidx = 
@@ -2591,18 +2606,16 @@ function! s:CCTreeGlobals.mUpdateForCurrentSymbol() dict
         return s:CCTreeRC.Error
     endif
     if self.PreviewState.keyword != ''
-    let swatch = s:StopWatch.mCreate()
-    " Move this function to globals? 
-    call s:StatusLine.mInit()
-    let atree = self.mGetCallsForSymbol(self.PreviewState.keyword, 
-                    \ 0, 
-                    \ self.PreviewState.direction)
-    call s:StatusLine.mRestore()
-    "call s:StatusLine.mSetInfo('Populating tree (Please wait...)')
-    call self.Window.mDisplayTree(atree, self.PreviewState.direction)
+        let swatch = s:StopWatch.mCreate()
+        " Move this function to globals? 
+        call s:StatusLine.mInit()
+        let atree = self.mGetCallsForSymbol(self.PreviewState.keyword, 
+                        \ 0, 
+                        \ self.PreviewState.direction)
+        call s:StatusLine.mRestore()
+        call self.Window.mDisplayTree(atree, self.PreviewState.direction)
 
-    call swatch.mSnapElapsed()
-    "echomsg "Done loading tree.Time taken: ".swatch.mGetText()." secs"
+        call swatch.mSnapElapsed()
     endif
 endfunction
 
@@ -2798,14 +2811,18 @@ function! s:CCTreeTraceTreeForSymbol(sym_arg, direction)
                     \ 'customlist,<SNR>' . s:sid . 'CCTreeCompleteKwd')
         if symbol == ''
             return
+        else
         endif
     endif
 
-    call s:CCTreeGlobals.mSetPreviewState(symbol,
-                                        \ g:CCTreeRecursiveDepth,
-                                        \ a:direction)
-
-    call s:CCTreeGlobals.mUpdateForCurrentSymbol()
+    if index(s:CCTreeGlobals.mGetSymNames(), symbol) != -1
+        call s:CCTreeGlobals.mSetPreviewState(symbol,
+                                            \ g:CCTreeRecursiveDepth,
+                                            \ a:direction)
+        call s:CCTreeGlobals.mUpdateForCurrentSymbol()
+    else
+        call s:CCTreeUtils.mWarningMsg('Symbol not found')
+    endif
 endfunction
 
 
