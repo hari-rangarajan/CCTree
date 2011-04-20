@@ -1,10 +1,13 @@
 This is a mirror of http://www.vim.org/scripts/script.php?script_id=2368
 
 Description:
-       Plugin generates call trees (aka function call dependencies) for any function or macro in real-time inside Vim using Cscope database. (Functionality similar to that of tools like CBrowser, Kscope, Source navigator, Eclipse, Source Insight). Currently supported language: C.
+       Plugin generates call trees (aka function call dependencies) for any function or macro in real-time inside Vim using Cscope database. (Functionality similar to that of tools like CBrowser, Kscope, Source navigator, Eclipse, Source Insight). 
 
-  Requirements: 1) Cscope          2) Vim 7.xx 
+Currently supported language: C. 
+Requirements: Cscope, Vim 7.xx 
 
-Project details/Screenshots:
-                 http://sites.google.com/site/vimcctree/ 
+Project details/Screenshots:  http://sites.google.com/site/vimcctree/ 
+
+[NEW]: Check out  http://sourceforge.net/projects/ccglue/ for an external tool that can produce cross-reference files from cscope [and ctags] databases that CCTree can load directly from disk.
+
  

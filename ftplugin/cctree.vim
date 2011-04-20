@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: April 05, 2011
-"      Version: 1.33 
+"  Last Change: April 20, 2011
+"      Version: 1.39.1
 "
 "=============================================================================
 " 
@@ -266,6 +266,8 @@
 "                 in incorrectly identified function blocks, etc.
 "  }}}
 "  {{{ History:
+"           Version 1.35: April 13, 2011
+"                 1. Use +Conceal feature for highlighting (only Vim 7.3)
 "           Version 1.33: April 5, 2011
 "                 1. Load and trace CCTree native XRefDb directly from disk
 "                 2. Fix AppendDB command when 'ignorecase' is set
@@ -365,6 +367,7 @@
 "   }}}
 "   {{{ Thanks:
 "
+"    Ben Fritz                      (ver 1.39 -- Suggestion/Testing for conceal feature)
 "    Ben Fritz                      (ver 1.26 -- Bug report)
 "    Frank Chang                    (ver 1.0x -- testing/UI enhancement ideas/bug fixes)
 "    Arun Chaganty/Timo Tiefel	    (Ver 0.60 -- bug report)
@@ -515,6 +518,12 @@ perl << PERL_EOF
 PERL_EOF
     endif
 endif
+endif
+
+if has('conceal')
+    let s:CCTreeUseConceal = 1
+else
+    let s:CCTreeUseConceal = 0
 endif
 
 if !exists('CCTreeUseUTF8Symbols')
@@ -2129,8 +2138,8 @@ endfunction
 " {{{ CCTree Markers
 let s:TreeMarkers_UTF8 = {
                             \ 'splitT' : nr2char(0x251c),
-                            \ 'arrowF' : nr2char(0x25c0),
-                            \ 'arrowR' : nr2char(0x25B6),
+                            \ 'arrowR' : nr2char(0x25c0),
+                            \ 'arrowF' : nr2char(0x25B6),
                             \ 'extV' : nr2char(0x2502),
                             \ 'extH': nr2char(0x2500),
                             \ 'depth': nr2char(0x25BC)
@@ -2265,7 +2274,7 @@ endfunction
 function! s:CCTreeWindow.mPreviewSave(savetitle) dict
     if s:FindOpenWindow(s:windowtitle) == 1
         setlocal modifiable
-        call self.mClearMarks()
+        call self.mClearMarks(b:displayTree)
         setlocal nomodifiable
      	setlocal statusline=%-F
        	silent! exec ":f ". a:savetitle
@@ -2368,6 +2377,11 @@ function! s:CCTreeWindow.mEnter() dict
         setlocal nowrap
         setlocal nobuflisted
 
+        if s:CCTreeUseConceal == 1
+            setlocal cole=3
+            setlocal cocu=nv
+        endif
+
         setlocal statusline=%=%{CCTreeWindowPreviewStatusLine()}
 
         call self.mInitSyntax(self.treeMarkers.icons)
@@ -2404,40 +2418,44 @@ endfunction
 " There are 3 types of lines, marked with the start character [\s, !, #]
 " Also @ is used to mark the path that is going up
 
-function! s:CCTreeWindow.mMarkCallTree(treelst, keyword) dict
+function! s:CCTreeWindow.mMarkCallTree(dtree, keyword) dict
     let declevel = -1
+    let treelst = a:dtree.entries
+    let curLine = line(".")
+    
+    let declevel = treelst[curLine-1].level
 
-    for idx in range(line("."), 1, -1)
+    let targetlevel = declevel 
+    for idx in range(curLine, 1, -1)
+        let aentry = treelst[idx-1]
+
+
         " Find our keyword
-        if declevel == -1  
-            if a:treelst[idx-1].symbol == a:keyword
-                let declevel = a:treelst[idx-1].level
-            endif
-        endif
-
+        let linemarker = 0
         " Skip folds
-        if declevel != -1 && foldclosed(idx) == -1
-            let curline = getline(idx)
-            if declevel == a:treelst[idx-1].level
-                let linemarker = '!'
-                let declevel -= 1
-            else
-                let linemarker = '#'
+        if declevel != -1 && foldclosed(idx) == -1 
+            if targetlevel == aentry.level
+                let linemarker = 1
+                let targetlevel -= 1 
             endif
-            let pos = match(curline, '['.self.treeMarkers.icons.vertSyms.']', 
-                            \ 0, declevel+1)
-            " Unconventional change char
-            let curline = linemarker.strpart(curline, 1, pos-2).'@'.
-                        \ strpart(curline, pos, 1). strpart(curline, pos+1)
-            call setline(idx, curline)
+            let aline = a:dtree.mGetNotationalTxt(aentry.level, targetlevel+1, linemarker, 1) 
+                            \ . aentry.symbol
+            call setline(idx, aline)
         endif
     endfor
 endfunction
 
-function! s:CCTreeWindow.mClearMarks() dict
-   let windict = winsaveview()
-   silent! exec "1,$s/[!#@]/ /e".s:Utils.mGetSearchFlag(1)
-   call winrestview(windict)
+function! s:CCTreeWindow.mClearMarks(dtree) dict
+    for idx in range(line(".")+1, line("$"))
+        let breakout = (getline(idx)[0] !~ "[!#]")
+        if breakout == 1
+            break
+        endif
+        let aentry = a:dtree.entries[idx-1]
+        let aline = a:dtree.mGetNotationalTxt(aentry.level, -1, 0, 0) 
+                    \ . aentry.symbol
+        call setline(idx, aline)
+    endfor
 endfunction
 
 function! s:CCTreeWindow.mInitSyntax(markers) dict
@@ -2456,8 +2474,13 @@ function! s:CCTreeWindow.mInitSyntax(markers) dict
         "syntax match CCTreeHiPathMark /\s[|+]/ contained
         exec 'syntax match CCTreeHiPathMark /\s[' . a:markers.vertSyms . ']/ contained'
         
-        syntax match CCTreeMarkExcl  /^[!#]/ contained
-        syntax match CCTreeMarkTilde /@/  contained
+        if s:CCTreeUseConceal == 1
+            syntax match CCTreeMarkExcl  /^[!#]/ contained conceal 
+            syntax match CCTreeMarkTilde /@/  contained conceal 
+        else
+            syntax match CCTreeMarkExcl  /^[!#]/ contained
+            syntax match CCTreeMarkTilde /@/  contained 
+        endif
         "syntax region CCTreeUpArrowBlock start="@"  end=/[|+]/  contains=CCTreeMarkTilde contained oneline
         exec 'syntax region CCTreeUpArrowBlock start="@"  end=/['. a:markers.vertSyms .']/  contains=CCTreeMarkTilde contained oneline'
 
@@ -2479,7 +2502,8 @@ let s:CCTreeDisplay = {}
 function! s:CCTreeDisplay.mPopulateTreeInCurrentBuffer(dtree)
     let linelist = []
     for aentry in a:dtree.entries
-        let aline = a:dtree.lvlNotationTxt[aentry.level]. aentry.symbol
+        let aline = a:dtree.mGetNotationalTxt(aentry.level, -1, 0, 0)
+                        \ . aentry.symbol
         let len = s:Utils.mStrlenEx(aline)
         let b:maxwindowlen = max([len+1, b:maxwindowlen])
         call add(linelist, aline)
@@ -2614,13 +2638,13 @@ let s:calltreemaxdepth = 10
 let s:DisplayTree = {
                     \ 'entries': [],
                     \ 'levelMaxLen': repeat([255], s:calltreemaxdepth),
-                    \ 'lvlNotationTxt': repeat([" "], s:calltreemaxdepth)
+                    \ 'notTxt': {}
                     \ }
 
 function! s:DisplayTree.mCreate(calltree, direction, markers) dict
     let dt = deepcopy(s:DisplayTree)
     call dt.mBuildTreeForLevel(a:calltree, 0)
-    call dt.mBuildNotationalTxt(a:direction, a:markers.icons)
+    call dt.mBuildNotationalTxtMarkers(a:direction, a:markers.icons)
 
     unlet dt.mBuildTreeForLevel
     unlet dt.mCreate
@@ -2633,16 +2657,12 @@ function! s:DisplayTree.mBuildTreeForLevel(ctree, level)
         return
     endif
     
-    if g:CCTreeDisplayMode == 1 
-       let curlevellen = 1
-    elseif g:CCTreeDisplayMode == 2
-       let curlevellen = a:level + 2
-    elseif g:CCTreeDisplayMode == 3
+    if g:CCTreeDisplayMode == 3
        let curlevellen = strlen(a:ctree.symbol) + a:level + 2
+       let self.levelMaxLen[a:level] = min([self.levelMaxLen[a:level],
+                                        \ curlevellen])
     endif    
     
-    let self.levelMaxLen[a:level] = min([self.levelMaxLen[a:level],
-                                        \ curlevellen])
 
     let aentry = s:DisplayTreeEntry.mCreate(a:ctree.symbol, a:level)
     call add(self.entries, aentry)
@@ -2655,33 +2675,129 @@ function! s:DisplayTree.mBuildTreeForLevel(ctree, level)
 endfunction
 
 
-function! s:DisplayTree.mBuildNotationalTxt(direction, markerSyms) dict 
-    let pptxt = "  "
-
+function! s:DisplayTree.mBuildNotationalTxtMarkers(direction, markerSyms) dict 
    " REVISIT
    if a:direction == 'p' 
         let directiontxt = a:markerSyms.arrowR . " "
     elseif a:direction == 'c'
         let directiontxt = a:markerSyms.arrowF . " "
    endif
+    
+
+   let self.notTxt.arrowHead = a:markerSyms.splitT 
+   let self.notTxt.arrow = directiontxt
+   let self.notTxt.arrowLead = a:markerSyms.extH
+   let self.notTxt.sep = a:markerSyms.extV
+   if s:CCTreeUseConceal == 1
+       let concealspace = " "
+   else
+       let concealspace = ""
+   endif
+
+   let self.notTxt.symHighlighter= concealspace . "@"
+
+   let self.notTxt.hiSymbolMarker = "!".concealspace
+   let self.notTxt.hiBranchMarker = "#".concealspace
+
+   let self.notTxt.cache = {}
+
+endfunction
+
+function! s:DisplayTree.mGetNotationalTxt(depth, hiDepth, hiSym, hiPath) dict 
+    let notkey = join(a:000, ":")
+    if has_key(self.notTxt.cache,notkey) == 1
+        return self.notTxt.cache[notkey]
+    else
+        return self.mBuildNotationalTxt(a:depth, a:hiDepth, a:hiSym, a:hiPath)
+    endif
+endfunction
+
+function! s:DisplayTree.mBuildNotationalTxt(depth, hiDepth, hiSym, hiPath) dict 
+    let hiBranch = 0
+    let curDepth = a:depth
+    if 0
+        let Aspace = "A"
+        let Bspace = "B"
+        let Cspace = "C"
+        let Sspace = "S"
+        let Xspace = "X"
+        let Zspace = "Z"
+        let Fspace = "1"
+    else
+        let Aspace = " "
+        let Bspace = " "
+        let Cspace = " "
+        let Sspace = " "
+        let Xspace = " "
+        let Zspace = " "
+        let Fspace = " "
+    endif
    
-    let self.lvlNotationTxt[0] = pptxt . a:markerSyms.splitT . directiontxt
-
-    for idx in range(1, s:calltreemaxdepth-1)
-        if self.levelMaxLen[idx] != 255
-            let pptxt .= repeat(" ", self.levelMaxLen[idx-1])
-            let self.lvlNotationTxt[idx] = pptxt . a:markerSyms.splitT
-
-            if g:CCTreeDisplayMode == 1 
-                let arrows = a:markerSyms.extH
-            elseif g:CCTreeDisplayMode >= 2
-                let arrows = repeat(a:markerSyms.extH, idx)
-            endif
-
-            let self.lvlNotationTxt[idx] = pptxt. a:markerSyms.splitT . arrows . directiontxt
-            let pptxt .= a:markerSyms.extV
+    if g:CCTreeDisplayMode == 1 
+        let arrowLeads = self.notTxt.arrowLead
+    elseif g:CCTreeDisplayMode >= 2
+        let arrowLeads = repeat(self.notTxt.arrowLead, a:depth)
+    endif
+    
+    let indentSpace = ""
+    if g:CCTreeDisplayMode == 2
+        if curDepth > 0
+            let  indentSpace = repeat(Aspace, curDepth)
         endif
-    endfor
+    elseif g:CCTreeDisplayMode == 3
+        if curDepth > 0
+            let indentSpace = repeat(Aspace, self.levelMaxLen[curDepth-1])
+        endif
+    endif
+    let notTxt = self.notTxt.arrowHead. arrowLeads . self.notTxt.arrow
+    if a:hiDepth == a:depth
+        let notTxt = indentSpace . self.notTxt.symHighlighter . notTxt
+        let hiBranch = 1
+    else
+        let notTxt = indentSpace. Cspace. notTxt
+    endif
+    let curDepth -= 1
+    
+    let indentSpace = ""
+    while (curDepth > 0)
+        if g:CCTreeDisplayMode == 2
+            let  indentSpace = repeat(Bspace, curDepth)
+        elseif g:CCTreeDisplayMode == 3
+            let indentSpace = repeat(Bspace, self.levelMaxLen[curDepth-1])
+        endif
+        let notTxt = self.notTxt.sep . notTxt
+        if a:hiDepth == curDepth && a:hiPath == 1
+            let notTxt = indentSpace . self.notTxt.symHighlighter . notTxt
+            let hiBranch = 1
+        else
+            let notTxt = indentSpace. Cspace. notTxt
+        endif
+        let curDepth -= 1
+    endwhile
+    if curDepth == 0
+        " curdepth is  0
+        if a:hiDepth == curDepth  && a:hiPath == 1
+            let notTxt = self.notTxt.symHighlighter . notTxt
+            let hiBranch = 1
+        else
+            let notTxt = Fspace . notTxt
+        endif
+        let curDepth -= 1
+    endif
+    " adjust space
+    if a:depth > 0 
+        let notTxt = Xspace . notTxt
+    endif
+    if hiBranch == 1
+        if a:hiSym == 1
+            let notTxt = self.notTxt.hiSymbolMarker . notTxt
+        else
+            let notTxt = self.notTxt.hiBranchMarker . notTxt
+        endif
+    else
+            let notTxt = Sspace . notTxt
+    endif
+    return notTxt
 endfunction
 
 "}}}
@@ -2700,7 +2816,11 @@ endfunction
 
 
 function! CCTreeFoldText()
-    let line = substitute(getline(v:foldstart), '[!@#]', ' ' , 'g')
+    if s:CCTreeUseConceal == 1
+        let line = substitute(getline(v:foldstart), '[!@#]', '' , 'g')
+    else
+        let line = substitute(getline(v:foldstart), '[!@#]', ' ' , 'g')
+    endif
     return line. " (+". (v:foldend - v:foldstart). 
                 \  ')'. repeat(" ", winwidth(0))
 endfunction
@@ -2950,8 +3070,8 @@ endfunction
 function! s:CCTreeGlobals.mCursorHoldHandleEvent() dict
     if self.Window.mGetKeywordAtCursor() != s:CCTreeRC.Error
        setlocal modifiable
-       call self.Window.mClearMarks()
-       call self.Window.mMarkCallTree(b:displayTree.entries,
+       call self.Window.mClearMarks(b:displayTree)
+       call self.Window.mMarkCallTree(b:displayTree,
                             \ self.Window.hiKeyword)
        setlocal nomodifiable
     endif
@@ -2990,6 +3110,18 @@ function! s:CCTreeSetUseUtf8Symbols(val)
     call s:CCTreeGlobals.mEncodingChangedHandleEvent()
 endfunction
 
+function! s:CCTreeSetUseConceal(val) 
+    if a:val == -1 
+        let s:CCTreeUseConceal = !s:CCTreeUseConceal
+    else
+        let s:CCTreeUseConceal = a:val
+    endif
+    if !has('conceal')
+        call s:CCTreeUtils.mWarningMsg('+conceal feature not available')
+        let s:CCTreeUseConceal = 0
+    endif
+endfunction
+
 function! s:CCTreeOptionsList(arglead, cmdline, cursorpos) 
     let opts = keys(s:CCTreeOptions)
     if a:arglead == ''
@@ -3000,7 +3132,8 @@ function! s:CCTreeOptionsList(arglead, cmdline, cursorpos)
 endfunction
 
 let s:CCTreeOptions = {'UseUnicodeSymbols': function('s:CCTreeSetUseUtf8Symbols'),
-            \ 'DynamicTreeHiLights': function('s:CCTreeSetUseCallTreeHiLights')
+            \ 'DynamicTreeHiLights': function('s:CCTreeSetUseCallTreeHiLights'),
+            \ 'UseConceal': function('s:CCTreeSetUseConceal')
             \}
 
 " }}}
@@ -3031,8 +3164,8 @@ function! s:CCTreeTraceTreeForSymbol(sym_arg, direction)
             return
         endif
     endif
-
-    if len(s:CCTreeGlobals.mGetSymNames(symbol)) > 0
+    let symmatch = s:CCTreeGlobals.mGetSymNames(symbol) 
+    if len(symmatch) > 0 && index(symmatch, symbol) >= 0
         call s:CCTreeGlobals.mSetPreviewState(symbol,
                                             \ g:CCTreeRecursiveDepth,
                                             \ a:direction)
