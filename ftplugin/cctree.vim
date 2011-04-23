@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: April 20, 2011
-"      Version: 1.39.1
+"  Last Change: April 22, 2011
+"      Version: 1.40
 "
 "=============================================================================
 " 
@@ -266,7 +266,9 @@
 "                 in incorrectly identified function blocks, etc.
 "  }}}
 "  {{{ History:
-"           Version 1.35: April 13, 2011
+"           Version 1.40: April 22, 2011
+"                 1. Maintain order of functions called during forward tracing
+"           Version 1.39: April 18, 2011
 "                 1. Use +Conceal feature for highlighting (only Vim 7.3)
 "           Version 1.33: April 5, 2011
 "                 1. Load and trace CCTree native XRefDb directly from disk
@@ -1063,10 +1065,14 @@ let s:UniqList = {}
 
 function! s:UniqList.mFilterEntries(lstval) dict
         let valdict = {}
+        let reslist = ''
         for aval in a:lstval
-            let valdict[aval] = ''
+            if !has_key(valdict, aval) 
+                let valdict[aval] = ''
+                let reslist .= (aval . ",")
+            endif
         endfor
-        return join(keys(valdict),",")
+        return reslist
 endfunction
 
 let s:CCTreeUniqListFilter = deepcopy(s:UniqList)
@@ -2069,6 +2075,7 @@ endfunction
 " Load the cscope db into the global cctree xref db
 function! s:CCTreeDBList.mAddNew(dbName, xRefDb, dbclass, storageclass)
     " Create db loader, reader
+    echomsg a:dbName
     let gObjs = self.mCreateDbLoaderAndReader(a:dbName, a:dbclass, a:storageclass)
 
     if type(gObjs) == type({})
