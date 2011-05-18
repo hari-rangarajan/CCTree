@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: May 6, 2011
-"      Version: 1.50
+"  Last Change: May 18, 2011
+"      Version: 1.51
 "
 "=============================================================================
 "
@@ -275,6 +275,8 @@
 "               CCTree cannot recognize nameless enum symbols.
 "  }}}
 "  {{{ History:
+"           Version 1.51: May 18, 2011
+"                 1. Robust error reporting when external (split/cat) utils fail
 "           Version 1.50: May 6, 2011
 "                 1. Support cross-referencing of global variables, macros,
 "                    enums, and typedefs.
@@ -381,6 +383,7 @@
 "   }}}
 "   {{{ Thanks:
 "
+"    Qaiser Durrani                 (ver 1.51 -- Reporting issues with SunOS)
 "    Ben Fritz                      (ver 1.39 -- Suggestion/Testing for conceal feature)
 "    Ben Fritz                      (ver 1.26 -- Bug report)
 "    Frank Chang                    (ver 1.0x -- testing/UI enhancement ideas/bug fixes)
@@ -715,7 +718,7 @@ endfunction
 "}}}
 " {{{ Shell command interface
 
-let s:ShellCmds = {}
+let s:ShellCmds = {'shellOutput': ''}
 
 function! s:ShellCmds.mSplit(inFile, outFile)
         let cmdEx = substitute(g:CCTreeSplitProgCmd, "PROG_SPLIT", g:CCTreeSplitProg,"")
@@ -741,8 +744,8 @@ function! s:ShellCmds.mJoin(inFileList, outFile)
 endfunction
 
 function! s:ShellCmds.mExec(cmd)
-    let cmdoutput = system(a:cmd)
-    if cmdoutput != ''
+    let s:shellOutput= system(a:cmd)
+    if s:shellOutput != ''
          " Failed
          return s:CCTreeRC.Error
     endif
@@ -821,7 +824,9 @@ function! s:vFileW.mClose()  dict
         let filelist = join(self.splitfiles, " ")
         let cmdEx = s:ShellCmds.mJoin(filelist, self.link)
         if s:ShellCmds.mExec(cmdEx) != s:CCTreeRC.Success
-             call s:CCTreeUtils.mWarningMsg("Shell command: ".cmdEx. " failed!")
+            let msg =  s:shellOutput ."Shell command: ".cmdEx. " failed!".
+                        \ " Refer help to setup split/join utils."
+            call s:CCTreeUtils.mWarningPrompt(msg)
         endif
     endif
     for afile in self.splitfiles
@@ -872,7 +877,9 @@ function! s:vFileR.mOpen()  dict
                 let cmdEx = s:ShellCmds.mSplit(self.link, tmpDb)
 
                 if s:ShellCmds.mExec(cmdEx) != s:CCTreeRC.Success
-                     call s:CCTreeUtils.mWarningMsg("Shell command: ".cmdEx. " failed!")
+                     let msg =  s:shellOutput ."Shell command: ".cmdEx. " failed!".
+                             \ " Refer help to setup split/join utils."
+                     call s:CCTreeUtils.mWarningPrompt(msg)
                      return -1
                 else
                      let self.splitfiles = split(expand(tmpDb."*"), "\n")
@@ -2029,6 +2036,12 @@ function! s:CCTreeUtils.mFilter(lines, filtercmd) dict
         endwhile
         call pBar.mDone()
         return retlst
+endfunction
+
+function! s:CCTreeUtils.mWarningPrompt(msg) dict
+    echohl WarningMsg
+    let a = input(s:pluginname. ": ". a:msg)
+    echohl None
 endfunction
 
 function! s:CCTreeUtils.mWarningMsg(msg) dict
