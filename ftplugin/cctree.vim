@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: May 18, 2011
-"      Version: 1.51
+"  Last Change: June 17, 2011
+"      Version: 1.53
 "
 "=============================================================================
 "
@@ -275,6 +275,9 @@
 "               CCTree cannot recognize nameless enum symbols.
 "  }}}
 "  {{{ History:
+"           Version 1.53: June 17, 2011
+"                 1. Bug fix related to appending cscope databases
+"                 2. Bug fix related to loading xref databases
 "           Version 1.51: May 18, 2011
 "                 1. Robust error reporting when external (split/cat) utils fail
 "           Version 1.50: May 6, 2011
@@ -383,11 +386,12 @@
 "   }}}
 "   {{{ Thanks:
 "
+"    Ben Fritz                      (ver 1.53 -- Bug reports on database append/load)
 "    Qaiser Durrani                 (ver 1.51 -- Reporting issues with SunOS)
 "    Ben Fritz                      (ver 1.39 -- Suggestion/Testing for conceal feature)
 "    Ben Fritz                      (ver 1.26 -- Bug report)
 "    Frank Chang                    (ver 1.0x -- testing/UI enhancement ideas/bug fixes)
-"    Arun Chaganty/Timo Tiefel            (Ver 0.60 -- bug report)
+"    Arun Chaganty/Timo Tiefel      (Ver 0.60 -- bug report)
 "    Michael Wookey                 (Ver 0.4 -- Testing/bug report/patches)
 "    Yegappan Lakshmanan            (Ver 0.2 -- Patches)
 "
@@ -1092,6 +1096,8 @@ function! s:UniqList.mFilterEntries(lstval) dict
                 let reslist .= (aval . ",")
             endif
         endfor
+        " strip out the last comma
+        let reslist = reslist[:-2]
         return reslist
 endfunction
 
@@ -1473,7 +1479,7 @@ endfunction
 function! s:CCTreeTagDbRdr.mDecodeTagLine(tagline) dict
 
         let items = split(a:tagline, "\t")
-        let newsym = s:CCTreeSym.mCreate("")
+        let newsym = s:CCTreeSym.mCreate("", "")
         try
             let [newsym.idx, newsym.n] = split(items[0], '#')
         catch
@@ -2179,6 +2185,7 @@ function! s:CCTreeDBList.mMerge(dbName, xRefDb, class)
         if self.mLoadDB(gObjs.loader, a:xRefDb,
                             \ gObjs.reader) != s:CCTreeRC.Error
             call self.mAddDbToList(gObjs.loader.fDBName, gObjs.loader.class)
+            call swatch.mSnapElapsed()
             let msg = "Done merging databases. xRef Symbol Count: "
                                      \.a:xRefDb.mGetSymbolCount()
                                      \.". Time taken: ".swatch.mGetText()." secs"
