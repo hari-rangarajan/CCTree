@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: June 17, 2011
-"      Version: 1.53
+"  Last Change: June 20, 2011
+"      Version: 1.55
 "
 "=============================================================================
 "
@@ -275,6 +275,10 @@
 "               CCTree cannot recognize nameless enum symbols.
 "  }}}
 "  {{{ History:
+"           Version 1.55: June 20, 2011
+"                 1. Speed-up syntax highlighting by restricting to visible
+"                 area (Note: To export to HTML, run TOhtml command on cctree window 
+"                 copy to get complete highlighted call-tree) 
 "           Version 1.53: June 17, 2011
 "                 1. Bug fix related to appending cscope databases
 "                 2. Bug fix related to loading xref databases
@@ -2405,10 +2409,13 @@ endfunction
 function! s:CCTreeWindow.mPreviewSave(savetitle) dict
     if s:FindOpenWindow(s:windowtitle) == 1
         setlocal modifiable
-        call self.mClearMarks(b:displayTree)
+        call self.mClearMarksAll(b:displayTree)
+        call self.mMarkCallTreeAll(b:displayTree,
+                            \ self.hiKeyword)
         setlocal nomodifiable
-             setlocal statusline=%-F
-               silent! exec ":f ". a:savetitle
+        setlocal statusline=%-F
+        silent! exec ":f ". a:savetitle
+        setlocal buflisted
         return s:CCTreeRC.Success
     endif
     return s:CCTreeRC.Error
@@ -2549,7 +2556,15 @@ endfunction
 " There are 3 types of lines, marked with the start character [\s, !, #]
 " Also @ is used to mark the path that is going up
 
-function! s:CCTreeWindow.mMarkCallTree(dtree, keyword) dict
+function! s:CCTreeWindow.mMarkCallTreeVisible(dtree, keyword) dict
+    call self.mMarkCallTree(a:dtree, a:keyword, line("w0"))
+endfunction
+
+function! s:CCTreeWindow.mMarkCallTreeAll(dtree, keyword) dict
+    call self.mMarkCallTree(a:dtree, a:keyword, 1)
+endfunction
+
+function! s:CCTreeWindow.mMarkCallTree(dtree, keyword, firstLine) dict
     let declevel = -1
     let treelst = a:dtree.entries
     let curLine = line(".")
@@ -2557,7 +2572,7 @@ function! s:CCTreeWindow.mMarkCallTree(dtree, keyword) dict
     let declevel = treelst[curLine-1].level
 
     let targetlevel = declevel
-    for idx in range(curLine, 1, -1)
+    for idx in range(curLine, a:firstLine,  -1)
         let aentry = treelst[idx-1]
 
 
@@ -2576,11 +2591,23 @@ function! s:CCTreeWindow.mMarkCallTree(dtree, keyword) dict
     endfor
 endfunction
 
-function! s:CCTreeWindow.mClearMarks(dtree) dict
-    for idx in range(line(".")+1, line("$"))
-        let breakout = (getline(idx)[0] !~ "[!#]")
-        if breakout == 1
-            break
+function! s:CCTreeWindow.mClearMarksVisible(dtree) dict
+    call self.mClearMarks(a:dtree, line("w$"), 1)
+endfunction
+
+function! s:CCTreeWindow.mClearMarksAll(dtree) dict
+    call self.mClearMarks(a:dtree, line("$"), 0)
+endfunction
+
+function! s:CCTreeWindow.mClearMarks(dtree, lastLine, noskip) dict
+    let curLine = line(".")
+    for idx in range(curLine+1, a:lastLine)
+        if a:noskip == 0
+            " be smart, breakout when we are done
+            let breakout = (getline(idx)[0] !~ "[!#]")
+            if breakout == 1 
+                break
+            endif
         endif
         let aentry = a:dtree.entries[idx-1]
         let aline = a:dtree.mGetNotationalTxt(aentry.level, -1, 0, 0)
@@ -3201,8 +3228,8 @@ endfunction
 function! s:CCTreeGlobals.mCursorHoldHandleEvent() dict
     if self.Window.mGetKeywordAtCursor() != s:CCTreeRC.Error
        setlocal modifiable
-       call self.Window.mClearMarks(b:displayTree)
-       call self.Window.mMarkCallTree(b:displayTree,
+       call self.Window.mClearMarksVisible(b:displayTree)
+       call self.Window.mMarkCallTreeVisible(b:displayTree,
                             \ self.Window.hiKeyword)
        setlocal nomodifiable
     endif
