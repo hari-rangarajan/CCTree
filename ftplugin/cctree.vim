@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: June 20, 2011
-"      Version: 1.55
+"  Last Change: July 14, 2011
+"      Version: 1.60
 "
 "=============================================================================
 "
@@ -275,6 +275,9 @@
 "               CCTree cannot recognize nameless enum symbols.
 "  }}}
 "  {{{ History:
+"           Version 1.60: July 14, 2011
+"                 1. Speed-up call-tree depth manipulation using incremental
+"                 updates
 "           Version 1.55: June 20, 2011
 "                 1. Speed-up syntax highlighting by restricting to visible
 "                 area (Note: To export to HTML, run TOhtml command on cctree window 
@@ -408,7 +411,7 @@ if !exists('loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
   let loaded_cctree = 1
 else
-  "finish
+  finish
 endif
 
 " Line continuation used here
@@ -1376,7 +1379,6 @@ endfunction
 
 function! s:XRefDiskDb.mGetSymbolIdFromName(symname) dict
         let symtagline = taglist('\#'.a:symname.'$')
-        let g:xyz = symtagline
         let asym = self.mDecodeTagEntry(symtagline[0])
         return asym.idx
 endfunction
@@ -1767,23 +1769,27 @@ endfunction
 "}}}
 "}}} End of Xref
 " {{{ Tracer
-let s:CallTree = {
-                    \ 'symbol' : ""
+let s:CallTreeNode = {
+                    \ 'symname' : "",
+                    \ 'symid' : ""
                     \ }
-function! s:CallTree.mCreate(name) dict
-    let ct = deepcopy(s:CallTree)
+function! s:CallTreeNode.mCreate(name, id) dict
+    let ct = deepcopy(s:CallTreeNode)
     unlet ct.mCreate
 
-    let ct.symbol = a:name
+    let ct.symname = a:name
+    let ct.symid = a:id
 
     return ct
 endfunction
 
-function! s:CallTree.mAddChildLink(childTree) dict
-    if !has_key(self, 'childlinks')
-        let self.childlinks = []
+let s:CallTreeUtils = {}
+
+function! s:CallTreeUtils.mAddChildLink(callTreeNode, childTree) dict
+    if !has_key(a:callTreeNode, 'childlinks')
+        let a:callTreeNode.childlinks = []
     endif
-    call add(self.childlinks, a:childTree)
+    call add(a:callTreeNode.childlinks, a:childTree)
 endfunction
 
 let s:XRefTracer = {
@@ -1811,28 +1817,66 @@ function! s:XRefTracer.mGetSymbolIdXRef(symid, direction) dict
     return symidslist
 endfunction
 
-function! s:XRefTracer.mBuildForSymbol(symid, curdepth, maxdepth,
+function! s:XRefTracer.mGrowTree(rtree, 
+                                      \ direction, pbar) dict
+    if !has_key(a:rtree, 'childlinks')
+        call self.mBuildTree(a:rtree, 1, 1,
+                    \ a:direction, a:pbar)
+    else
+        for entry in a:rtree['childlinks'] 
+            call self.mGrowTree(entry,
+                        \ a:direction, a:pbar)
+        endfor
+    endif
+endfunction
+
+function! s:XRefTracer.mPruneTree(rtree, 
+                                      \ direction, pbar) dict
+    if !has_key(a:rtree, 'childlinks')
+        return -1
+    else
+        for entry in a:rtree['childlinks'] 
+            if (self.mPruneTree(entry,
+                        \ a:direction, a:pbar) == -1) 
+                call remove(a:rtree['childlinks'], 0)
+            endif
+        endfor
+    endif
+    if empty(a:rtree['childlinks']) == 1
+        call remove(a:rtree, 'childlinks')
+    endif
+    return 0
+endfunction
+
+function! s:XRefTracer.mBuildTree(rtree, curdepth, maxdepth,
                                       \ direction, pbar) dict
     if (a:curdepth > a:maxdepth)
         return {}
     endif
 
     call a:pbar.mSetDepth(a:curdepth)
-    let asym = self.xrefdb.mGetSymbolFromId(a:symid)
+
+    for entry in self.mGetSymbolIdXRef(a:rtree.symid, a:direction)
+        call a:pbar.mTick(1)
+        let symname = self.xrefdb.mGetSymbolFromId(entry)
+        let ctree = s:CallTreeNode.mCreate(symname['n'], entry)
+        call self.mBuildTree(ctree, a:curdepth+1, a:maxdepth,
+                                            \a:direction, a:pbar)
+        call s:CallTreeUtils.mAddChildLink(a:rtree, ctree)
+    endfor
+endfunction
+
+function! s:XRefTracer.mBuildForSymbol(symid, curdepth, maxdepth,
+                                      \ direction, pbar) dict
+    let symname = self.xrefdb.mGetSymbolFromId(a:symid)
     " revisit
-    if empty(asym)
+    if empty(symname)
         return {}
     endif
 
-    let rtree = s:CallTree.mCreate(asym['n'])
-
-    for entry in self.mGetSymbolIdXRef(a:symid, a:direction)
-        call a:pbar.mTick(1)
-        let ctree =
-                \self.mBuildForSymbol(entry, a:curdepth+1, a:maxdepth,
-                                            \a:direction, a:pbar)
-        call rtree.mAddChildLink(ctree)
-    endfor
+    let rtree = s:CallTreeNode.mCreate(symname['n'], a:symid)
+    call self.mBuildTree(rtree, a:curdepth, a:maxdepth, a:direction,
+                \ a:pbar)
     return rtree
 endfunction
 " }}}
@@ -2585,7 +2629,7 @@ function! s:CCTreeWindow.mMarkCallTree(dtree, keyword, firstLine) dict
                 let targetlevel -= 1
             endif
             let aline = a:dtree.mGetNotationalTxt(aentry.level, targetlevel+1, linemarker, 1)
-                            \ . aentry.symbol
+                            \ . s:DisplayTreeUtils.mGetSymName(aentry)
             call setline(idx, aline)
         endif
     endfor
@@ -2611,7 +2655,7 @@ function! s:CCTreeWindow.mClearMarks(dtree, lastLine, noskip) dict
         endif
         let aentry = a:dtree.entries[idx-1]
         let aline = a:dtree.mGetNotationalTxt(aentry.level, -1, 0, 0)
-                    \ . aentry.symbol
+                            \ . s:DisplayTreeUtils.mGetSymName(aentry)
         call setline(idx, aline)
     endfor
 endfunction
@@ -2661,7 +2705,7 @@ function! s:CCTreeDisplay.mPopulateTreeInCurrentBuffer(dtree)
     let linelist = []
     for aentry in a:dtree.entries
         let aline = a:dtree.mGetNotationalTxt(aentry.level, -1, 0, 0)
-                        \ . aentry.symbol
+                            \ . s:DisplayTreeUtils.mGetSymName(aentry)
         let len = s:Utils.mStrlenEx(aline)
         let b:maxwindowlen = max([len+1, b:maxwindowlen])
         call add(linelist, aline)
@@ -2779,17 +2823,27 @@ augroup END
 " {{{ Tree building
 
 let s:DisplayTreeEntry = {
-                     \ 'symbol': "",
+                     \ 'symlink': "",
                      \ 'level': -1
                      \ }
 
 function! s:DisplayTreeEntry.mCreate(sym, level) dict
     let te = deepcopy(s:DisplayTreeEntry)
-    let te.symbol = a:sym
+    let te.symlink = a:sym
     let te.level = a:level
     unlet te.mCreate
 
     return te
+endfunction
+
+let s:DisplayTreeUtils =  {}
+
+function! s:DisplayTreeUtils.mGetSymName(DTEntry) dict
+    return a:DTEntry.symlink.symname
+endfunction
+
+function! s:DisplayTreeUtils.mGetSymLevel(DTEntry) dict
+    return a:DTEntry.level
 endfunction
 
 let s:calltreemaxdepth = 10
@@ -2811,7 +2865,7 @@ function! s:DisplayTree.mCreate(calltree, direction, markers) dict
 endfunction
 
 function! s:DisplayTree.mBuildTreeForLevel(ctree, level)
-    if !has_key(a:ctree, 'symbol')
+    if !has_key(a:ctree, 'symname')
         return
     endif
 
@@ -2822,7 +2876,7 @@ function! s:DisplayTree.mBuildTreeForLevel(ctree, level)
     endif
 
 
-    let aentry = s:DisplayTreeEntry.mCreate(a:ctree.symbol, a:level)
+    let aentry = s:DisplayTreeEntry.mCreate(a:ctree, a:level)
     call add(self.entries, aentry)
 
     if has_key(a:ctree, 'childlinks')
@@ -3063,19 +3117,34 @@ function! s:CCTreeGlobals.mGetSymNames(lead) dict
     return syms
 endfunction
 
-
 function! s:CCTreeGlobals.mGetCallsForSymbol(name, depth, direction) dict
+    let rtree = s:CallTreeNode.mCreate(a:name, -1)
+    call self.mGetCallsForTreeNode(rtree, 'build',
+                \ self.PreviewState.depth, a:direction)
+    return rtree
+endfunction
+
+function! s:CCTreeGlobals.mGetCallsForTreeNode(rtree, action, depth, direction) dict
+    call s:StatusLine.mInit()
     let pbar = s:ProgressBarRoll.mCreate(['-','\','|','/'], '*')
     call s:StatusLine.mSetInfo('Building ')
     redrawstatus!
     " Create tracer
     let xtracer = s:XRefTracer.mCreate(self.XRefDb)
     call xtracer.mInitTracing()
-    let symid = self.XRefDb.mGetSymbolIdFromName(a:name)
-    let xrefs = xtracer.mBuildForSymbol(symid,
-                      \ a:depth, self.PreviewState.depth, a:direction, pbar)
+    let a:rtree.symid = self.XRefDb.mGetSymbolIdFromName(a:rtree.symname)
+    if a:action == 'build'
+        call xtracer.mBuildTree(a:rtree, 0, a:depth, 
+                    \ a:direction, pbar)
+    elseif a:action == 'expand'
+        call xtracer.mGrowTree(a:rtree, 
+                    \ a:direction, pbar)
+    elseif a:action == 'prune'
+        call xtracer.mPruneTree(a:rtree, 
+                    \ a:direction, pbar)
+    endif
     call xtracer.mDoneTracing()
-    return xrefs
+    call s:StatusLine.mRestore()
 endfunction
 
 function! s:CCTreeGlobals.mShowLoadedDBs() dict
@@ -3103,11 +3172,11 @@ function! s:CCTreeGlobals.mUpdateForCurrentSymbol() dict
     if self.PreviewState.keyword != ''
         let swatch = s:StopWatch.mCreate()
         " Move this function to globals?
-        call s:StatusLine.mInit()
         let atree = self.mGetCallsForSymbol(self.PreviewState.keyword,
                         \ 0,
                         \ self.PreviewState.direction)
-        call s:StatusLine.mRestore()
+        " May change in the future
+        let self.PreviewState.rootNode = atree
         call self.Window.mDisplayTree(atree, self.PreviewState.direction)
 
         call swatch.mSnapElapsed()
@@ -3139,17 +3208,24 @@ function! s:CCTreeGlobals.mSanitizeCallDepth() dict
     return error
 endfunction
 
+function! s:CCTreeGlobals.mRecursiveDepthModify(action) dict
+    call self.mGetCallsForTreeNode(self.PreviewState.rootNode,
+                \ a:action, 1, self.PreviewState.direction)
+    call self.Window.mDisplayTree(self.PreviewState.rootNode,
+                \ self.PreviewState.direction)
+endfunction
+
 function! s:CCTreeGlobals.mRecursiveDepthIncrease() dict
     let self.PreviewState.depth += 1
     if self.mSanitizeCallDepth() == 0
-        call self.mUpdateForCurrentSymbol()
+        call self.mRecursiveDepthModify('expand')
     endif
 endfunction
 
 function! s:CCTreeGlobals.mRecursiveDepthDecrease() dict
     let self.PreviewState.depth -= 1
     if self.mSanitizeCallDepth() == 0
-        call self.mUpdateForCurrentSymbol()
+        call self.mRecursiveDepthModify('prune')
     endif
 endfunction
 
