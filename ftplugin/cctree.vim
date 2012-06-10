@@ -16,8 +16,8 @@
 "  Description: C Call-Tree Explorer Vim Plugin
 "   Maintainer: Hari Rangarajan <hari.rangarajan@gmail.com>
 "          URL: http://vim.sourceforge.net/scripts/script.php?script_id=2368
-"  Last Change: July 14, 2011
-"      Version: 1.60
+"  Last Change: June 10, 2012
+"      Version: 1.61
 "
 "=============================================================================
 "
@@ -275,6 +275,9 @@
 "               CCTree cannot recognize nameless enum symbols.
 "  }}}
 "  {{{ History:
+"           Version 1.61: June 10, 2012
+"                 1. Compability patch for change in tag file format starting
+"                 from ccglue version 0.6.0
 "           Version 1.60: July 14, 2011
 "                 1. Speed-up call-tree depth manipulation using incremental
 "                 updates
@@ -411,7 +414,7 @@ if !exists('loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
   let loaded_cctree = 1
 else
-  finish
+  "finish
 endif
 
 " Line continuation used here
@@ -1054,7 +1057,7 @@ function! s:TranslateMap.mTranslateAlpha(value) dict
 endfunction
 
 function! s:CCTreeGetXRefDbMaps(maptype, mapkind)
-        let dichar1 = ",0123456789"
+        let dichar1 = "|0123456789"
         let dichar2 = ",0123456789"
 
         return s:CCTreeCreateGenericMaps(a:maptype, a:mapkind, dichar1, dichar2)
@@ -1098,9 +1101,11 @@ function! s:UniqList.mFilterEntries(lstval) dict
         let valdict = {}
         let reslist = ''
         for aval in a:lstval
-            if !has_key(valdict, aval)
-                let valdict[aval] = ''
-                let reslist .= (aval . ",")
+            let rval = split(aval, "|")
+            let bval = rval[0]
+            if !has_key(valdict, bval)
+                let valdict[bval] = ''
+                let reslist .= (bval . ",")
             endif
         endfor
         " strip out the last comma
