@@ -15,4 +15,11 @@ This plugin generates symbol dependency tree (aka call tree, call graph) in real
 ## Complementary tools
 * [ccglue](http://sourceforge.net/projects/ccglue/) Generate cross-reference cctree database files from cscope and/or ctags database files.
 
- 
+## Vim installation
+To use with [vundle](https://github.com/gmarik/Vundle.vim) (recommended) simply add:
+
+```vim
+Plugin 'albfan/CCTree' 
+```
+
+in your .vimrc
