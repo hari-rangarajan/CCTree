@@ -19,7 +19,7 @@ This plugin generates symbol dependency tree (aka call tree, call graph) in real
 To use with [vundle](https://github.com/gmarik/Vundle.vim) (recommended) simply add:
 
 ```vim
-Plugin 'albfan/CCTree' 
+Plugin 'hari-rangarajan/CCTree' 
 ```
 
 in your .vimrc
