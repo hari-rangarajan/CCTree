@@ -1302,11 +1302,6 @@ function! s:XRefMemDbLdr.mProcessListIntoXrefDb(symbols, rdr, xrefdb, pbar)
     endfor
 endfunction
 
-function! s:GenericDbLdr.mParseDbHeader(gRdr)
-    let header = readfile(self.fDBName, "", a:gRdr.headerLines)
-    return a:gRdr.mParseDbHeader(header)
-endfunction
-
 " }}}
 " {{{ Generic Disk DB Ldr
 let s:XRefDiskDbLdr = {
