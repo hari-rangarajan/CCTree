@@ -3195,7 +3195,7 @@ endfunction
 function! s:CCTreeGlobals.mSanitizeCallDepth() dict
     let error = 0
     if self.PreviewState.depth >= s:calltreemaxdepth
-        self.PreviewState.depth = s:calltreemaxdepth
+        let self.PreviewState.depth = s:calltreemaxdepth
         let error = 1
     elseif self.PreviewState.depth < 1
         let self.PreviewState.depth = 1
