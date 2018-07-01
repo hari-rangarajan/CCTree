@@ -1009,7 +1009,7 @@ function! s:TranslateMap.mCreate (srcsym, destsym, mapkind, regex) dict
 
     let index = 0
     while (index < maxsym)
-        let dicttable.mappings[a:srcsym[index]] =  a:destsym[index]
+        let dicttable.mappings[char2nr(a:srcsym[index])] =  a:destsym[index]
         let index += 1
     endwhile
     " Need mapping lens, we assume it's constant across the board
@@ -1039,8 +1039,8 @@ function! s:TranslateMap.mTranslateNumeric(value) dict
     " remember to deal with multi-byte characters
     while index < len(a:value)
         let char1 = char2nr(a:value[index])
-        if has_key(self.mappings, char1)
-                let newmap = self.mappings[char1]
+        if has_key(self.mappings, char2nr(char1))
+                let newmap = self.mappings[char2nr(char1)]
         else
                 " take only the first character
                 let newmap = a:value[index]
@@ -1052,7 +1052,7 @@ function! s:TranslateMap.mTranslateNumeric(value) dict
 endfunction
 
 function! s:TranslateMap.mTranslateAlpha(value) dict
-    let retval = substitute(a:value, self.regex, '\=self.mappings[submatch(1)]', "g")
+    let retval = substitute(a:value, self.regex, '\=self.mappings[char2nr(submatch(1))]', "g")
     return retval
 endfunction
 
