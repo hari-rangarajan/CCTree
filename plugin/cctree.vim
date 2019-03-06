@@ -414,7 +414,7 @@ if !exists('loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
   let loaded_cctree = 1
 else
-  "finish
+  finish
 endif
 
 " Line continuation used here
