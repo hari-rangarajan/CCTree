@@ -410,9 +410,9 @@
 "    }}}
 
 " {{{ Init
-if !exists('loaded_cctree') && v:version >= 700
+if !exists('g:loaded_cctree') && v:version >= 700
   " First time loading the cctree plugin
-  let loaded_cctree = 1
+  let g:loaded_cctree = 1
 else
   finish
 endif
