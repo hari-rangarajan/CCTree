@@ -3277,7 +3277,7 @@ function! s:CCTreeGlobals.mWriteXRefDbToFile(fname) dict
     " create db serializer and writer
     let gDbSz = s:GenericDbSerializer.mCreate(self.XRefDb)
     let gDbWriter = s:CCTreeTagDbWriter.mCreate(
-                                \ s:CCTreeGetXRefDbMaps('Compress', 'Alpha'))
+                                \ s:CCTreeGetXRefDbMaps('Uncompress', 'Numeric'))
     call gDbSz.mWriteXRefDbToFile(a:fname, gDbWriter)
 endfunction
 
