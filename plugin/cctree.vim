@@ -1533,7 +1533,7 @@ function! s:GenericDbSerializer.mWriteSymsToFile(dstVFile,
                                                     \ "items")
     call a:gWriter.mInitWriting()
     " write syms
-    for asymid in sort(self.xrefdb.mGetSymbolIds())
+    for asymid in sort(self.xrefdb.mGetSymbolIds(), 'N')
         let  acctreesym = self.xrefdb.mGetSymbolFromId(asymid)
         call a:dstVFile.mWriteLine(a:gWriter.mBuildTagLine(acctreesym,
                         \ asymid))
@@ -1566,7 +1566,7 @@ endfunction
 function! s:CCTreeTagDbWriter.mBuildHeader() dict
     let hdr = []
     call add(hdr, "!_TAG_FILE_FORMAT\t2\t/extended format; --format=1 will not append ;\" to lines/")
-    call add(hdr, "!_TAG_FILE_SORTED\t1\t/0=unsorted, 1=sorted, 2=foldcase/")
+    call add(hdr, "!_TAG_FILE_SORTED\t0\t/0=unsorted, 1=sorted, 2=foldcase/")
     call add(hdr, "!_TAG_PROGRAM_NAME\t\tCCTree (Vim plugin)//")
     call add(hdr, "!_TAG_PROGRAM_URL\thttp://vim.sourceforge.net/scripts/script.php?script_id=2368\t/site/")
     return hdr
