@@ -1820,26 +1820,30 @@ function! s:XRefTracer.mGetSymbolIdXRef(symid, direction) dict
     return symidslist
 endfunction
 
-function! s:XRefTracer.mGrowTree(rtree, 
+function! s:XRefTracer.mGrowTree(rtree, curdepth, maxdepth,
                                       \ direction, pbar) dict
     if !has_key(a:rtree, 'childlinks')
         call self.mBuildTree(a:rtree, 1, 1,
                     \ a:direction, a:pbar)
     else
         for entry in a:rtree['childlinks'] 
-            call self.mGrowTree(entry,
+            call self.mGrowTree(entry, a:curdepth+1, a:maxdepth,
                         \ a:direction, a:pbar)
         endfor
     endif
 endfunction
 
-function! s:XRefTracer.mPruneTree(rtree, 
+function! s:XRefTracer.mPruneTree(rtree, curdepth, maxdepth,
                                       \ direction, pbar) dict
     if !has_key(a:rtree, 'childlinks')
-        return -1
+        if a:curdepth > a:maxdepth
+            return -1
+        else
+            return 0
+        endif
     else
         for entry in a:rtree['childlinks'] 
-            if (self.mPruneTree(entry,
+            if (self.mPruneTree(entry, a:curdepth+1, a:maxdepth,
                         \ a:direction, a:pbar) == -1) 
                 call remove(a:rtree['childlinks'], 0)
             endif
@@ -3142,10 +3146,10 @@ function! s:CCTreeGlobals.mGetCallsForTreeNode(rtree, action, depth, direction) 
         call xtracer.mBuildTree(a:rtree, 0, a:depth, 
                     \ a:direction, pbar)
     elseif a:action == 'expand'
-        call xtracer.mGrowTree(a:rtree, 
+        call xtracer.mGrowTree(a:rtree, 0, a:depth,
                     \ a:direction, pbar)
     elseif a:action == 'prune'
-        call xtracer.mPruneTree(a:rtree, 
+        call xtracer.mPruneTree(a:rtree, 0, a:depth,
                     \ a:direction, pbar)
     endif
     call xtracer.mDoneTracing()
@@ -3215,7 +3219,7 @@ endfunction
 
 function! s:CCTreeGlobals.mRecursiveDepthModify(action) dict
     call self.mGetCallsForTreeNode(self.PreviewState.rootNode,
-                \ a:action, 1, self.PreviewState.direction)
+                \ a:action, self.PreviewState.depth, self.PreviewState.direction)
     call self.Window.mDisplayTree(self.PreviewState.rootNode,
                 \ self.PreviewState.direction)
 endfunction
