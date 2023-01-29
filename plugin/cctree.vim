@@ -1812,6 +1812,9 @@ endfunction
 
 function! s:XRefTracer.mGetSymbolIdXRef(symid, direction) dict
     let acctreesym = self.xrefdb.mGetSymbolFromId(a:symid)
+    if empty(acctreesym)
+	    return []
+    endif
     let symidslist = split(
                     \s:CCTreeMakeCommaListUnique(acctreesym[a:direction]), ",")
     return symidslist
@@ -1859,10 +1862,12 @@ function! s:XRefTracer.mBuildTree(rtree, curdepth, maxdepth,
     for entry in self.mGetSymbolIdXRef(a:rtree.symid, a:direction)
         call a:pbar.mTick(1)
         let symname = self.xrefdb.mGetSymbolFromId(entry)
-        let ctree = s:CallTreeNode.mCreate(symname['n'], entry)
-        call self.mBuildTree(ctree, a:curdepth+1, a:maxdepth,
-                                            \a:direction, a:pbar)
-        call s:CallTreeUtils.mAddChildLink(a:rtree, ctree)
+	if !empty(symname)
+		let ctree = s:CallTreeNode.mCreate(symname['n'], entry)
+		call self.mBuildTree(ctree, a:curdepth+1, a:maxdepth,
+						    \a:direction, a:pbar)
+		call s:CallTreeUtils.mAddChildLink(a:rtree, ctree)
+	endif
     endfor
 endfunction
 
