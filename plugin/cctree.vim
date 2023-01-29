@@ -1823,7 +1823,7 @@ endfunction
 function! s:XRefTracer.mGrowTree(rtree, curdepth, maxdepth,
                                       \ direction, pbar) dict
     if !has_key(a:rtree, 'childlinks')
-        call self.mBuildTree(a:rtree, 1, 1,
+        call self.mBuildTree(a:rtree, 0, 1,
                     \ a:direction, a:pbar)
     else
         for entry in a:rtree['childlinks'] 
@@ -1857,7 +1857,7 @@ endfunction
 
 function! s:XRefTracer.mBuildTree(rtree, curdepth, maxdepth,
                                       \ direction, pbar) dict
-    if (a:curdepth > a:maxdepth)
+    if (a:curdepth >= a:maxdepth)
         return {}
     endif
 
